@@ -21,6 +21,39 @@ Here’s the section describing the `mapfile` format. You can add this to your `
 
 ---
 
+### **Configuration**
+
+The program reads its configuration from `/opt/1Password/op-secret-manager.conf`. This file specifies the paths to the API key file and the map file.
+
+#### **Configuration File Format**
+
+The configuration file is a simple key-value file. Here’s an example:
+
+```
+# Path to the API key file
+API_KEY_PATH=/mnt/service-1p/api
+
+# Path to the map file
+MAP_FILE_PATH=/mnt/service-1p/mapfile
+```
+
+#### **Fields**
+- **`API_KEY_PATH`**: The path to the file containing the 1Password service account API key.
+- **`MAP_FILE_PATH`**: The path to the map file that defines secret mappings.
+
+#### **Example Configuration**
+
+Create the configuration file at `/opt/1Password/op-secret-manager.conf` with the following content:
+
+```
+API_KEY_PATH=/mnt/service-1p/api
+MAP_FILE_PATH=/mnt/service-1p/mapfile
+```
+
+Ensure the file is readable by the user running the program.
+
+---
+
 ### **Map File Format**
 
 The `mapfile` is a plain text file that maps secrets from 1Password to specific file locations. Each line in the file represents a single mapping and follows this format:
@@ -29,12 +62,12 @@ The `mapfile` is a plain text file that maps secrets from 1Password to specific 
 <username>    <secret_reference>    <file_path>
 ```
 
-### **Fields**
+#### **Fields**
 1. **`<username>`**: The username of the user who should have access to the secret.
 2. **`<secret_reference>`**: The 1Password secret reference in the format `op://<vault>/<item>/<field>`.
 3. **`<file_path>`**: The file path where the secret should be written. This path should be within `/run/<uid>/secrets/`, where `<uid>` is the user ID of the user running the program.
 
-### **Example**
+#### **Example**
 Here’s an example `mapfile`:
 
 ```
