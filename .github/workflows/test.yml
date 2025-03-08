@@ -25,7 +25,9 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           SECRET_REF1: ${{ secrets.SECRET_REF1 }}
           SECRET_VAL1: ${{ secrets.SECRET_VAL1 }}
-          #SECRET_REF2: ${{ secrets.SECRET_REF2 }}
-          #SECRET_VAL2: ${{ secrets.SECRET_VAL2 }}
+          SECRET_REF2: ${{ secrets.SECRET_REF2 }}
+          SECRET_VAL2: ${{ secrets.SECRET_VAL2 }}
+          SECRET_REF3: ${{ secrets.SECRET_REF3 }}
+          SECRET_VAL3: ${{ secrets.SECRET_VAL3 }}
         run: |
           go test -v ./...
