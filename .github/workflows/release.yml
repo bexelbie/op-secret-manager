@@ -5,6 +5,10 @@ on:
     tags:
       - "v*" # Trigger on tags like v1.0.0, v2.1.0, etc.
 
+env:
+  BUILD_MACOS: 'true' # Set to 'false' if you don't want to build for macOS
+  BUILD_WINDOWS: 'true' # Set to 'false' if you don't want to build for Windows
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -41,10 +45,10 @@ jobs:
           path: |
             op-secret-manager-linux-amd64
             op-secret-manager-linux-arm64
-            ${{ env.BUILD_MACOS == 'true' && 'op-secret-manager-darwin-amd64' || '' }}
-            ${{ env.BUILD_MACOS == 'true' && 'op-secret-manager-darwin-arm64' || '' }}
-            ${{ env.BUILD_WINDOWS == 'true' && 'op-secret-manager-windows-amd64.exe' || '' }}
-            ${{ env.BUILD_WINDOWS == 'true' && 'op-secret-manager-windows-arm64.exe' || '' }}
+            op-secret-manager-darwin-amd64
+            op-secret-manager-darwin-arm64
+            op-secret-manager-windows-amd64.exe
+            op-secret-manager-windows-arm64.exe
 
   release:
     needs: build
@@ -67,7 +71,7 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Upload Release Assets (Linux AMD64)
+      - name: Upload Release Assets
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
