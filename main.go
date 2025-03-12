@@ -116,8 +116,7 @@ func switchUser(username string) error {
 func main() {
 	// Parse command-line flags
 	flag.BoolVar(&verbose, "v", false, "Enable verbose logging")
-	// Remove the duplicate flag definition:
-	// flag.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
+	flag.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
 	flag.Parse()
 
 	logVerbose("Starting program with verbose logging enabled")
