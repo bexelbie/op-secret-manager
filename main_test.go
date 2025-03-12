@@ -54,20 +54,16 @@ func (m *MockFileWriter) Chown(name string, uid, gid int) error {
 	return nil
 }
 
-// MockOnePasswordClient is a mock implementation of OPClient.
-type MockOnePasswordClient struct {
+// MockOPClient is a unified mock implementation of OPClient and SecretResolver.
+type MockOPClient struct {
 	ResolveSecretFunc func(ctx context.Context, secretRef string) (string, error)
 }
 
-func (m *MockOnePasswordClient) Secrets() SecretResolver {
-	return &MockSecretsService{ResolveSecretFunc: m.ResolveSecretFunc}
+func (m *MockOPClient) Secrets() SecretResolver {
+	return m // MockOPClient implements SecretResolver directly
 }
 
-type MockSecretsService struct {
-	ResolveSecretFunc func(ctx context.Context, secretRef string) (string, error)
-}
-
-func (m *MockSecretsService) Resolve(ctx context.Context, secretRef string) (string, error) {
+func (m *MockOPClient) Resolve(ctx context.Context, secretRef string) (string, error) {
 	if m.ResolveSecretFunc != nil {
 		return m.ResolveSecretFunc(ctx, secretRef)
 	}
@@ -232,7 +228,7 @@ otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentU
 	}
 	tmpMapFile.Close()
 
-	mockClient := &MockOnePasswordClient{
+	mockClient := &MockOPClient{
 		ResolveSecretFunc: func(ctx context.Context, secretRef string) (string, error) {
 			switch secretRef {
 			case "op://vault/item/field1":
