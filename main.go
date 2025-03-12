@@ -25,7 +25,31 @@ var verbose bool
 
 func logVerbose(format string, args ...interface{}) {
 	if verbose {
-		fmt.Printf("[VERBOSE] "+format+"\n", args...)
+		redactedArgs := make([]interface{}, len(args))
+		for i, arg := range args {
+			switch v := arg.(type) {
+			case string:
+				// Redact secret values in the format op://vault/item/field
+				if strings.HasPrefix(v, "op://") {
+					parts := strings.Split(v, "/")
+					for i := range parts {
+						if len(parts[i]) > 5 {
+							if i > 0 {
+								parts[i] = parts[i][:5]
+							} else {
+								parts[i] = parts[i][len(parts[i])-5:]
+							}
+						}
+					}
+					redactedArgs[i] = strings.Join(parts, "/")
+				} else {
+					redactedArgs[i] = v
+				}
+			default:
+				redactedArgs[i] = v
+			}
+		}
+		fmt.Printf("[VERBOSE] "+format+"\n", redactedArgs...)
 	}
 }
 
@@ -220,7 +244,9 @@ func main() {
 
 	// Step 9: Process the map file
 	scanner := bufio.NewScanner(mapFile)
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
 		line := scanner.Text()
 		parts := strings.Split(line, "\t")
 		if len(parts) != 3 {
@@ -232,13 +258,15 @@ func main() {
 		secretRef := parts[1]
 		filePath := parts[2]
 
-		logVerbose("Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
-
 		// Step 10: Check if the entry is for the current user
 		if username != currentUser.Username {
-			logVerbose("Skipping entry: not for current user")
+			if verbose {
+				logVerbose("Skipping line %d: not for current user", lineNumber)
+			}
 			continue
 		}
+
+		logVerbose("Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
 
 		// Step 11: Resolve the secret with a timeout
 		logVerbose("Resolving secret: %s", secretRef)
