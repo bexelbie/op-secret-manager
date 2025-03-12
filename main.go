@@ -18,6 +18,7 @@ import (
 
 const (
 	configFilePath = "/opt/1Password/op-secret-manager.conf"
+	opTimeout      = 10 * time.Second // Define a named constant for the timeout value
 )
 
 var verbose bool
@@ -33,7 +34,7 @@ func readConfig(configFilePath string) (string, string, error) {
 	logVerbose("Reading configuration file: %s", configFilePath)
 	file, err := os.Open(configFilePath)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to open config file: %v", err)
+		return "", "", fmt.Errorf("readConfig: failed to open config file: %w", err)
 	}
 	defer file.Close()
 
@@ -47,7 +48,7 @@ func readConfig(configFilePath string) (string, string, error) {
 		}
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
-			return "", "", fmt.Errorf("invalid config line: %s", line)
+			return "", "", fmt.Errorf("readConfig: invalid config line: %s", line)
 		}
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
@@ -57,12 +58,12 @@ func readConfig(configFilePath string) (string, string, error) {
 
 	apiKeyPath, ok := config["API_KEY_PATH"]
 	if !ok {
-		return "", "", fmt.Errorf("API_KEY_PATH not found in config file")
+		return "", "", fmt.Errorf("readConfig: API_KEY_PATH not found in config file")
 	}
 
 	mapFilePath, ok := config["MAP_FILE_PATH"]
 	if !ok {
-		return "", "", fmt.Errorf("MAP_FILE_PATH not found in config file")
+		return "", "", fmt.Errorf("readConfig: MAP_FILE_PATH not found in config file")
 	}
 
 	logVerbose("API key path: %s", apiKeyPath)
@@ -76,7 +77,7 @@ func getSUIDUser() (string, error) {
 	logVerbose("Effective UID (EUID): %d", euid)
 	u, err := user.LookupId(strconv.Itoa(euid))
 	if err != nil {
-		return "", fmt.Errorf("failed to lookup SUID user: %v", err)
+		return "", fmt.Errorf("getSUIDUser: failed to lookup SUID user: %w", err)
 	}
 	logVerbose("SUID user: %s", u.Username)
 	return u.Username, nil
@@ -87,25 +88,25 @@ func switchUser(username string) error {
 	logVerbose("Switching to user: %s", username)
 	u, err := user.Lookup(username)
 	if err != nil {
-		return fmt.Errorf("failed to lookup user %s: %v", username, err)
+		return fmt.Errorf("switchUser: failed to lookup user %s: %w", username, err)
 	}
 
 	uid, err := strconv.Atoi(u.Uid)
 	if err != nil {
-		return fmt.Errorf("invalid UID for user %s: %v", username, err)
+		return fmt.Errorf("switchUser: invalid UID for user %s: %w", username, err)
 	}
 
 	gid, err := strconv.Atoi(u.Gid)
 	if err != nil {
-		return fmt.Errorf("invalid GID for user %s: %v", username, err)
+		return fmt.Errorf("switchUser: invalid GID for user %s: %w", username, err)
 	}
 
 	if err := syscall.Setgid(gid); err != nil {
-		return fmt.Errorf("failed to set GID: %v", err)
+		return fmt.Errorf("switchUser: failed to set GID: %w", err)
 	}
 
 	if err := syscall.Setuid(uid); err != nil {
-		return fmt.Errorf("failed to set UID: %v", err)
+		return fmt.Errorf("switchUser: failed to set UID: %w", err)
 	}
 
 	logVerbose("Successfully switched to user: %s", username)
@@ -115,7 +116,8 @@ func switchUser(username string) error {
 func main() {
 	// Parse command-line flags
 	flag.BoolVar(&verbose, "v", false, "Enable verbose logging")
-	flag.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
+	// Remove the duplicate flag definition:
+	// flag.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
 	flag.Parse()
 
 	logVerbose("Starting program with verbose logging enabled")
@@ -123,20 +125,20 @@ func main() {
 	// Step 1: Dynamically determine the SUID user
 	suidUser, err := getSUIDUser()
 	if err != nil {
-		fmt.Printf("Failed to determine SUID user: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to determine SUID user: %v\n", err)
 		return
 	}
 
 	// Step 2: Switch to the SUID user
 	if err := switchUser(suidUser); err != nil {
-		fmt.Printf("Failed to switch to SUID user: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to switch to SUID user: %v\n", err)
 		return
 	}
 
 	// Step 3: Read the configuration file
 	apiKeyPath, mapFilePath, err := readConfig(configFilePath)
 	if err != nil {
-		fmt.Printf("Failed to read config file: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to read config file: %v\n", err)
 		return
 	}
 
@@ -144,13 +146,13 @@ func main() {
 	logVerbose("Reading API key from: %s", apiKeyPath)
 	apiKey, err := os.ReadFile(apiKeyPath)
 	if err != nil {
-		fmt.Printf("Failed to read API key: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to read API key: %v\n", err)
 		return
 	}
 
 	// Step 5: Initialize the 1Password client with a timeout
 	logVerbose("Initializing 1Password client")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // 10-second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout) // 10-second timeout
 	defer cancel()
 
 	client, err := onepassword.NewClient(
@@ -159,7 +161,7 @@ func main() {
 		onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
 	)
 	if err != nil {
-		fmt.Printf("Failed to create 1Password client: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to create 1Password client: %v\n", err)
 		return
 	}
 	logVerbose("1Password client initialized successfully")
@@ -168,7 +170,7 @@ func main() {
 	logVerbose("Reading map file: %s", mapFilePath)
 	mapFile, err := os.Open(mapFilePath)
 	if err != nil {
-		fmt.Printf("Failed to open map file: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to open map file: %v\n", err)
 		return
 	}
 	defer mapFile.Close()
@@ -176,14 +178,14 @@ func main() {
 	// Step 7: Get the current (executing) user
 	currentUser, err := user.Current()
 	if err != nil {
-		fmt.Printf("Failed to get current user: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to get current user: %v\n", err)
 		return
 	}
 	logVerbose("Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
 
 	// Step 8: Switch back to the executing user
 	if err := switchUser(currentUser.Username); err != nil {
-		fmt.Printf("Failed to switch back to executing user: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to switch back to executing user: %v\n", err)
 		return
 	}
 
@@ -193,7 +195,7 @@ func main() {
 		line := scanner.Text()
 		parts := strings.Split(line, "\t")
 		if len(parts) != 3 {
-			fmt.Printf("Invalid map file entry: %s\n", line)
+			fmt.Fprintf(os.Stderr, "Invalid map file entry: %s\n", line)
 			continue
 		}
 
@@ -213,7 +215,7 @@ func main() {
 		logVerbose("Resolving secret: %s", secretRef)
 		secret, err := client.Secrets().Resolve(ctx, secretRef)
 		if err != nil {
-			fmt.Printf("Failed to resolve secret %s: %v\n", secretRef, err)
+			fmt.Fprintf(os.Stderr, "Failed to resolve secret %s: %v\n", secretRef, err)
 			continue
 		}
 		logVerbose("Secret resolved successfully: %s", secretRef)
@@ -222,14 +224,14 @@ func main() {
 		dir := filepath.Dir(filePath)
 		logVerbose("Creating directory: %s", dir)
 		if err := os.MkdirAll(dir, 0700); err != nil {
-			fmt.Printf("Failed to create directory %s: %v\n", dir, err)
+			fmt.Fprintf(os.Stderr, "Failed to create directory %s: %v\n", dir, err)
 			continue
 		}
 
 		// Step 13: Write the secret to the file with 600 permissions
 		logVerbose("Writing secret to file: %s", filePath)
 		if err := os.WriteFile(filePath, []byte(secret), 0600); err != nil {
-			fmt.Printf("Failed to write secret to %s: %v\n", filePath, err)
+			fmt.Fprintf(os.Stderr, "Failed to write secret to %s: %v\n", filePath, err)
 			continue
 		}
 
@@ -239,13 +241,13 @@ func main() {
 
 		logVerbose("Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
 		if err := os.Chown(filePath, uid, gid); err != nil {
-			fmt.Printf("Failed to change ownership of file %s: %v\n", filePath, err)
+			fmt.Fprintf(os.Stderr, "Failed to change ownership of file %s: %v\n", filePath, err)
 			continue
 		}
 
 		logVerbose("Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
 		if err := os.Chown(dir, uid, gid); err != nil {
-			fmt.Printf("Failed to change ownership of directory %s: %v\n", dir, err)
+			fmt.Fprintf(os.Stderr, "Failed to change ownership of directory %s: %v\n", dir, err)
 			continue
 		}
 
@@ -253,6 +255,6 @@ func main() {
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading map file: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error reading map file: %v\n", err)
 	}
 }
