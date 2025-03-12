@@ -23,6 +23,31 @@ const (
 
 var verbose bool
 
+// Define a type for the file writer to allow for mocking
+type fileWriter interface {
+	WriteFile(filename string, data []byte, perm os.FileMode) error
+	MkdirAll(path string, perm os.FileMode) error
+	Chown(name string, uid, gid int) error
+}
+
+// Implement the fileWriter interface using the os package
+type osFileWriter struct{}
+
+func (osFileWriter) WriteFile(filename string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(filename, data, perm)
+}
+
+func (osFileWriter) MkdirAll(path string, perm os.FileMode) error {
+	return os.MkdirAll(path, perm)
+}
+
+func (osFileWriter) Chown(name string, uid, gid int) error {
+	return os.Chown(name, uid, gid)
+}
+
+// Define a global variable for the file writer
+var FileWriter fileWriter = osFileWriter{}
+
 func logVerbose(format string, args ...interface{}) {
 	if verbose {
 		redactedArgs := make([]interface{}, len(args))
@@ -167,6 +192,89 @@ func elevateSUID(username string) error {
 	return nil
 }
 
+// processMapFile processes the map file and writes secrets to files.
+func processMapFile(ctx context.Context, client onepassword.Client, mapFilePath string, currentUser *user.User) error {
+	logVerbose("Processing map file: %s", mapFilePath)
+	mapFile, err := os.Open(mapFilePath)
+	if err != nil {
+		return fmt.Errorf("processMapFile: failed to open map file: %w", err)
+	}
+	defer mapFile.Close()
+
+	scanner := bufio.NewScanner(mapFile)
+	lineNumber := 0
+	for scanner.Scan() {
+		lineNumber++
+		line := scanner.Text()
+		parts := strings.Split(line, "\t")
+		if len(parts) != 3 {
+			fmt.Fprintf(os.Stderr, "Invalid map file entry: %s\n", line)
+			continue
+		}
+
+		username := parts[0]
+		secretRef := parts[1]
+		filePath := parts[2]
+
+		// Check if the entry is for the current user
+		if username != currentUser.Username {
+			if verbose {
+				logVerbose("Skipping line %d: not for current user", lineNumber)
+			}
+			continue
+		}
+
+		logVerbose("Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
+
+		// Resolve the secret with a timeout
+		logVerbose("Resolving secret: %s", secretRef)
+		secret, err := client.Secrets().Resolve(ctx, secretRef)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to resolve secret %s: %v\n", secretRef, err)
+			continue
+		}
+		logVerbose("Secret resolved successfully: %s", secretRef)
+
+		// Create the directory structure with 700 permissions
+		dir := filepath.Dir(filePath)
+		logVerbose("Creating directory: %s", dir)
+		if err := FileWriter.MkdirAll(dir, 0700); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create directory %s: %v\n", dir, err)
+			continue
+		}
+
+		// Write the secret to the file with 600 permissions
+		logVerbose("Writing secret to file: %s", filePath)
+		if err := FileWriter.WriteFile(filePath, []byte(secret), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to write secret to %s: %v\n", filePath, err)
+			continue
+		}
+
+		// Ensure the file and directory are owned by the executing user
+		uid, _ := strconv.Atoi(currentUser.Uid)
+		gid, _ := strconv.Atoi(currentUser.Gid)
+
+		logVerbose("Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
+		if err := FileWriter.Chown(filePath, uid, gid); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to change ownership of file %s: %v\n", filePath, err)
+			continue
+		}
+
+		logVerbose("Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
+		if err := FileWriter.Chown(dir, uid, gid); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to change ownership of directory %s: %v\n", dir, err)
+			continue
+		}
+
+		fmt.Printf("Successfully wrote secret to %s\n", filePath)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("processMapFile: error reading map file: %w", err)
+	}
+	return nil
+}
+
 func main() {
 	// Parse command-line flags
 	flag.BoolVar(&verbose, "v", false, "Enable verbose logging")
@@ -233,85 +341,9 @@ func main() {
 	}
 	logVerbose("1Password client initialized successfully")
 
-	// Step 8: Read the map file
-	logVerbose("Reading map file: %s", mapFilePath)
-	mapFile, err := os.Open(mapFilePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to open map file: %v\n", err)
+	// Step 8: Process the map file
+	if err := processMapFile(ctx, client, mapFilePath, currentUser); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to process map file: %v\n", err)
 		return
-	}
-	defer mapFile.Close()
-
-	// Step 9: Process the map file
-	scanner := bufio.NewScanner(mapFile)
-	lineNumber := 0
-	for scanner.Scan() {
-		lineNumber++
-		line := scanner.Text()
-		parts := strings.Split(line, "\t")
-		if len(parts) != 3 {
-			fmt.Fprintf(os.Stderr, "Invalid map file entry: %s\n", line)
-			continue
-		}
-
-		username := parts[0]
-		secretRef := parts[1]
-		filePath := parts[2]
-
-		// Step 10: Check if the entry is for the current user
-		if username != currentUser.Username {
-			if verbose {
-				logVerbose("Skipping line %d: not for current user", lineNumber)
-			}
-			continue
-		}
-
-		logVerbose("Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
-
-		// Step 11: Resolve the secret with a timeout
-		logVerbose("Resolving secret: %s", secretRef)
-		secret, err := client.Secrets().Resolve(ctx, secretRef)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to resolve secret %s: %v\n", secretRef, err)
-			continue
-		}
-		logVerbose("Secret resolved successfully: %s", secretRef)
-
-		// Step 12: Create the directory structure with 700 permissions
-		dir := filepath.Dir(filePath)
-		logVerbose("Creating directory: %s", dir)
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create directory %s: %v\n", dir, err)
-			continue
-		}
-
-		// Step 13: Write the secret to the file with 600 permissions
-		logVerbose("Writing secret to file: %s", filePath)
-		if err := os.WriteFile(filePath, []byte(secret), 0600); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to write secret to %s: %v\n", filePath, err)
-			continue
-		}
-
-		// Step 14: Ensure the file and directory are owned by the executing user
-		uid, _ := strconv.Atoi(currentUser.Uid)
-		gid, _ := strconv.Atoi(currentUser.Gid)
-
-		logVerbose("Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
-		if err := os.Chown(filePath, uid, gid); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to change ownership of file %s: %v\n", filePath, err)
-			continue
-		}
-
-		logVerbose("Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
-		if err := os.Chown(dir, uid, gid); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to change ownership of directory %s: %v\n", dir, err)
-			continue
-		}
-
-		fmt.Printf("Successfully wrote secret to %s\n", filePath)
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading map file: %v\n", err)
 	}
 }
