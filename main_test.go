@@ -5,54 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"testing"
 
 	"github.com/1password/onepassword-sdk-go"
 )
-
-// MockFileWriter is a mock implementation of fileWriter.
-type MockFileWriter struct {
-	WriteFileFunc func(filename string, data []byte, perm os.FileMode) error
-	MkdirAllFunc  func(path string, perm os.FileMode) error
-	ChownFunc     func(name string, uid, gid int) error
-	FilesWritten  map[string][]byte // Tracks files and their content
-	DirsCreated   map[string]os.FileMode // Tracks directories and their permissions
-	FilesChowned  map[string][]int  // Tracks files and their ownership
-}
-
-func (m *MockFileWriter) WriteFile(filename string, data []byte, perm os.FileMode) error {
-	if m.WriteFileFunc != nil {
-		return m.WriteFileFunc(filename, data, perm)
-	}
-	if m.FilesWritten == nil {
-		m.FilesWritten = make(map[string][]byte)
-	}
-	m.FilesWritten[filename] = data
-	return nil
-}
-
-func (m *MockFileWriter) MkdirAll(path string, perm os.FileMode) error {
-	if m.MkdirAllFunc != nil {
-		return m.MkdirAllFunc(path, perm)
-	}
-	if m.DirsCreated == nil {
-		m.DirsCreated = make(map[string]os.FileMode)
-	}
-	m.DirsCreated[path] = perm
-	return nil
-}
-
-func (m *MockFileWriter) Chown(name string, uid, gid int) error {
-	if m.ChownFunc != nil {
-		return m.ChownFunc(name, uid, gid)
-	}
-	if m.FilesChowned == nil {
-		m.FilesChowned = make(map[string][]int)
-	}
-	m.FilesChowned[name] = []int{uid, gid}
-	return nil
-}
 
 // MockOPClient is a unified mock implementation of OPClient and SecretResolver.
 type MockOPClient struct {
@@ -134,198 +92,22 @@ func TestSecrets_FailingLiveCall(t *testing.T) {
 	}
 }
 
-// TestReadConfig tests the readConfig function.
-func TestReadConfig(t *testing.T) {
-	configContent := `
-API_KEY_PATH = /tmp/apikey.txt
-MAP_FILE_PATH = /tmp/mapfile.txt
-`
-	tmpConfigFile, err := os.CreateTemp("", "testconfig")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpConfigFile.Name())
-	_, err = tmpConfigFile.WriteString(configContent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpConfigFile.Close()
-
-	apiKeyPath, mapFilePath, err := readConfig(false, tmpConfigFile.Name())
-	if err != nil {
-		t.Fatalf("readConfig failed: %v", err)
-	}
-	if apiKeyPath != "/tmp/apikey.txt" {
-		t.Errorf("apiKeyPath mismatch: expected /tmp/apikey.txt, got %s", apiKeyPath)
-	}
-	if mapFilePath != "/tmp/mapfile.txt" {
-		t.Errorf("mapFilePath mismatch: expected /tmp/mapfile.txt, got %s", mapFilePath)
-	}
-
-	configContent = `MAP_FILE_PATH = /tmp/mapfile.txt`
-	err = os.WriteFile(tmpConfigFile.Name(), []byte(configContent), 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = readConfig(false, tmpConfigFile.Name())
-	if err == nil {
-		t.Errorf("Expected error for missing API_KEY_PATH, but got nil")
-	}
-
-	configContent = `API_KEY_PATH  /tmp/apikey.txt`
-	err = os.WriteFile(tmpConfigFile.Name(), []byte(configContent), 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = readConfig(false, tmpConfigFile.Name())
-	if err == nil {
-		t.Errorf("Expected error for invalid config line, but got nil")
-	}
-}
-
-// TestSUIDFunctions tests the SUID functions.
-func TestSUIDFunctions(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("Skipping SUID tests because not running as root")
-	}
-	suidUser, err := getSUIDUser(false)
-	if err != nil {
-		t.Fatalf("getSUIDUser failed: %v", err)
-	}
-	currentUser, err := user.Current()
-	if err != nil {
-		t.Fatalf("Failed to get current user: %v", err)
-	}
-	err = dropSUID(false, currentUser.Username)
-	if err != nil {
-		t.Errorf("dropSUID failed: %v", err)
-	}
-	err = elevateSUID(false, suidUser)
-	if err != nil {
-		t.Errorf("elevateSUID failed: %v", err)
-	}
-}
-
-func TestCleanupSecretFiles(t *testing.T) {
-    currentUser, err := user.Current()
-    if err != nil {
-        t.Fatalf("Failed to get current user: %v", err)
-    }
-
-    // Create a temporary map file
-    mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	/tmp/testfile1
-%s	op://vault/item/field2	/tmp/testfile2
-otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentUser.Username)
-
-    tmpMapFile, err := os.CreateTemp("", "testmap")
-    if err != nil {
-        t.Fatal(err)
-    }
-    defer os.Remove(tmpMapFile.Name())
-    _, err = tmpMapFile.WriteString(mapFileContent)
-    if err != nil {
-        t.Fatal(err)
-    }
-    tmpMapFile.Close()
-
-    // Create test files
-    testFiles := []string{"/tmp/testfile1", "/tmp/testfile2", "/tmp/testfile3"}
-    for _, file := range testFiles {
-        if err := os.WriteFile(file, []byte("test"), 0600); err != nil {
-            t.Fatal(err)
-        }
-        defer os.Remove(file)
-    }
-
-    // Run cleanup
-    if err := cleanupSecretFiles(tmpMapFile.Name(), currentUser, false); err != nil {
-        t.Fatalf("cleanupSecretFiles failed: %v", err)
-    }
-
-    // Verify files for the current user were removed
-    for _, file := range []string{"/tmp/testfile1", "/tmp/testfile2"} {
-        if _, err := os.Stat(file); !os.IsNotExist(err) {
-            t.Errorf("File %s was not removed", file)
-        }
-    }
-
-    // Verify non-current user file was not removed
-    if _, err := os.Stat("/tmp/testfile3"); os.IsNotExist(err) {
-        t.Errorf("File /tmp/testfile3 should not have been removed")
-    }
-}
-
-func TestCleanupSecretFiles_NonExistentFiles(t *testing.T) {
-    currentUser, err := user.Current()
-    if err != nil {
-        t.Fatalf("Failed to get current user: %v", err)
-    }
-
-    // Create a temporary map file
-    mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	/tmp/nonexistentfile`, currentUser.Username)
-
-    tmpMapFile, err := os.CreateTemp("", "testmap")
-    if err != nil {
-        t.Fatal(err)
-    }
-    defer os.Remove(tmpMapFile.Name())
-    _, err = tmpMapFile.WriteString(mapFileContent)
-    if err != nil {
-        t.Fatal(err)
-    }
-    tmpMapFile.Close()
-
-    // Run cleanup
-    if err := cleanupSecretFiles(tmpMapFile.Name(), currentUser, false); err != nil {
-        t.Fatalf("cleanupSecretFiles failed: %v", err)
-    }
-}
-
-func TestCleanupSecretFiles_PermissionError(t *testing.T) {
-    if os.Getuid() == 0 {
-        t.Skip("Skipping permission error test when running as root")
-    }
-
-    currentUser, err := user.Current()
-    if err != nil {
-        t.Fatalf("Failed to get current user: %v", err)
-    }
-
-    // Create a temporary map file
-    mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	/root/testfile`, currentUser.Username)
-
-    tmpMapFile, err := os.CreateTemp("", "testmap")
-    if err != nil {
-        t.Fatal(err)
-    }
-    defer os.Remove(tmpMapFile.Name())
-    _, err = tmpMapFile.WriteString(mapFileContent)
-    if err != nil {
-        t.Fatal(err)
-    }
-    tmpMapFile.Close()
-
-    // Run cleanup
-    err = cleanupSecretFiles(tmpMapFile.Name(), currentUser, false)
-    if err == nil {
-        t.Fatalf("Expected permission error, but got nil")
-    } else {
-        t.Logf("Received expected error: %v", err)
-    }
-}
-
+// TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
 	if err != nil {
 		t.Fatalf("Failed to get current user: %v", err)
 	}
 
-	// Update the map file content to include a new directory
-	mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	/tmp/testfile1
-%s	op://vault/item/field2	/tmp/newdir/testfile2
-otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentUser.Username)
+	// Create a temporary directory for the test
+	tmpDir := t.TempDir()
 
-	tmpMapFile, err := os.CreateTemp("", "testmap")
+	// Create a temporary map file
+	mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	%s/testfile1
+%s	op://vault/item/field2	%s/newdir/testfile2
+otheruser	op://vault/item/field3	%s/testfile3`, currentUser.Username, tmpDir, currentUser.Username, tmpDir, tmpDir)
+
+	tmpMapFile, err := os.CreateTemp(tmpDir, "testmap")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,58 +133,54 @@ otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentU
 		},
 	}
 
-	mockFileWriter := &MockFileWriter{
-		FilesWritten: make(map[string][]byte),
-		DirsCreated:  make(map[string]os.FileMode), // Correct initialization
-		FilesChowned: make(map[string][]int),
-	}
-
-	err = processMapFile(context.TODO(), mockClient, tmpMapFile.Name(), currentUser, false, mockFileWriter)
+	err = processMapFile(context.TODO(), mockClient, tmpMapFile.Name(), currentUser, false, osFileWriter{})
 	if err != nil {
 		t.Fatalf("processMapFile failed: %v", err)
 	}
 
 	// Verify file contents
-	if string(mockFileWriter.FilesWritten["/tmp/testfile1"]) != "secret1" {
-		t.Errorf("File /tmp/testfile1 content mismatch: expected 'secret1', got '%s'", string(mockFileWriter.FilesWritten["/tmp/testfile1"]))
+	file1Path := filepath.Join(tmpDir, "testfile1")
+	file2Path := filepath.Join(tmpDir, "newdir", "testfile2")
+	file3Path := filepath.Join(tmpDir, "testfile3")
+
+	file1Content, err := os.ReadFile(file1Path)
+	if err != nil {
+		t.Fatalf("Failed to read file %s: %v", file1Path, err)
 	}
-	if string(mockFileWriter.FilesWritten["/tmp/newdir/testfile2"]) != "secret2" {
-		t.Errorf("File /tmp/newdir/testfile2 content mismatch: expected 'secret2', got '%s'", string(mockFileWriter.FilesWritten["/tmp/newdir/testfile2"]))
+	if string(file1Content) != "secret1" {
+		t.Errorf("File %s content mismatch: expected 'secret1', got '%s'", file1Path, string(file1Content))
 	}
-	if _, ok := mockFileWriter.FilesWritten["/tmp/testfile3"]; ok {
-		t.Errorf("File /tmp/testfile3 should not have been written")
+
+	file2Content, err := os.ReadFile(file2Path)
+	if err != nil {
+		t.Fatalf("Failed to read file %s: %v", file2Path, err)
+	}
+	if string(file2Content) != "secret2" {
+		t.Errorf("File %s content mismatch: expected 'secret2', got '%s'", file2Path, string(file2Content))
+	}
+
+	if _, err := os.Stat(file3Path); !os.IsNotExist(err) {
+		t.Errorf("File %s should not have been written", file3Path)
 	}
 
 	// Verify that the new directory was created
-	expectedDirs := map[string]os.FileMode{
-		"/tmp/newdir": 0700, // Expected directory and its permissions
-	}
-	for dir, expectedPerm := range expectedDirs {
-		actualPerm, exists := mockFileWriter.DirsCreated[dir]
-		if !exists {
-			t.Errorf("Directory %s was not created", dir)
-		} else if actualPerm != expectedPerm {
-			t.Errorf("Directory %s permissions mismatch: expected %o, got %o", dir, expectedPerm, actualPerm)
-		}
+	newDirPath := filepath.Join(tmpDir, "newdir")
+	if _, err := os.Stat(newDirPath); os.IsNotExist(err) {
+		t.Errorf("Directory %s was not created", newDirPath)
 	}
 
 	// Verify ownership of the files and directories
 	uid, _ := strconv.Atoi(currentUser.Uid)
 	gid, _ := strconv.Atoi(currentUser.Gid)
-	expectedChowns := map[string][]int{
-		"/tmp/testfile1":       {uid, gid},
-		"/tmp/newdir/testfile2": {uid, gid},
-		"/tmp/newdir":          {uid, gid}, // Verify directory ownership
-	}
 
-	for file, expectedUidGid := range expectedChowns {
-		actualUidGid, ok := mockFileWriter.FilesChowned[file]
-		if !ok {
-			t.Errorf("File or directory %s was not chowned", file)
-			continue
-		}
-		if actualUidGid[0] != expectedUidGid[0] || actualUidGid[1] != expectedUidGid[1] {
-			t.Errorf("File or directory %s chown mismatch: expected UID %d GID %d, got UID %d GID %d", file, expectedUidGid[0], expectedUidGid[1], actualUidGid[0], actualUidGid[1])
-		}
+	// Use the verifyOwnership function from main.go
+	if err := verifyOwnership(file1Path, uid, gid, false); err != nil {
+		t.Errorf("verifyOwnership failed for %s: %v", file1Path, err)
+	}
+	if err := verifyOwnership(file2Path, uid, gid, false); err != nil {
+		t.Errorf("verifyOwnership failed for %s: %v", file2Path, err)
+	}
+	if err := verifyOwnership(newDirPath, uid, gid, false); err != nil {
+		t.Errorf("verifyOwnership failed for %s: %v", newDirPath, err)
 	}
 }

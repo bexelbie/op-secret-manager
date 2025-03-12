@@ -5,9 +5,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
-    "log"
+	"log"
 	"os"
-    "os/signal"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -161,238 +161,222 @@ func getSUIDUser(verbose bool) (string, error) {
 
 // elevateSUID elevates to the SUID user.
 func elevateSUID(verbose bool, username string) error {
-    logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
-    u, err := user.Lookup(username)
-    if err != nil {
-        return fmt.Errorf("elevateSUID: failed to lookup user %s: %w", username, err)
-    }
-    uid, err := strconv.Atoi(u.Uid)
-    if err != nil {
-        return fmt.Errorf("elevateSUID: invalid UID for user %s: %w", username, err)
-    }
-    gid, err := strconv.Atoi(u.Gid)
-    if err != nil {
-        return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
-    }
+	logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
+	u, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("elevateSUID: failed to lookup user %s: %w", username, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return fmt.Errorf("elevateSUID: invalid UID for user %s: %w", username, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
+	}
 
-    // Get supplementary groups
-    gids, err := u.GroupIds()
-    if err != nil {
-        return fmt.Errorf("elevateSUID: failed to get supplementary groups for user %s: %w", username, err)
-    }
-    gidList := make([]int, len(gids))
-    for i, g := range gids {
-        gidInt, err := strconv.Atoi(g)
-        if err != nil {
-            return fmt.Errorf("elevateSUID: invalid GID in supplementary groups for user %s: %w", username, err)
-        }
-        gidList[i] = gidInt
-    }
+	// Get supplementary groups
+	gids, err := u.GroupIds()
+	if err != nil {
+		return fmt.Errorf("elevateSUID: failed to get supplementary groups for user %s: %w", username, err)
+	}
+	gidList := make([]int, len(gids))
+	for i, g := range gids {
+		gidInt, err := strconv.Atoi(g)
+		if err != nil {
+			return fmt.Errorf("elevateSUID: invalid GID in supplementary groups for user %s: %w", username, err)
+		}
+		gidList[i] = gidInt
+	}
 
-    // Set supplementary groups
-    if err := syscall.Setgroups(gidList); err != nil {
-        return fmt.Errorf("elevateSUID: failed to set supplementary groups: %w", err)
-    }
+	// Set supplementary groups
+	if err := syscall.Setgroups(gidList); err != nil {
+		return fmt.Errorf("elevateSUID: failed to set supplementary groups: %w", err)
+	}
 
-    // Set GID
-    if err := syscall.Setgid(gid); err != nil {
-        return fmt.Errorf("elevateSUID: failed to set GID: %w", err)
-    }
+	// Set GID
+	if err := syscall.Setgid(gid); err != nil {
+		return fmt.Errorf("elevateSUID: failed to set GID: %w", err)
+	}
 
-    // Verify GID change
-    if syscall.Getgid() != gid || syscall.Getegid() != gid {
-        return fmt.Errorf("elevateSUID: GID change verification failed")
-    }
+	// Verify GID change
+	if syscall.Getgid() != gid || syscall.Getegid() != gid {
+		return fmt.Errorf("elevateSUID: GID change verification failed")
+	}
 
-    // Set UID
-    if err := syscall.Setuid(uid); err != nil {
-        return fmt.Errorf("elevateSUID: failed to set UID: %w", err)
-    }
+	// Set UID
+	if err := syscall.Setuid(uid); err != nil {
+		return fmt.Errorf("elevateSUID: failed to set UID: %w", err)
+	}
 
-    // Verify UID change
-    if syscall.Getuid() != uid || syscall.Geteuid() != uid {
-        return fmt.Errorf("elevateSUID: UID change verification failed")
-    }
+	// Verify UID change
+	if syscall.Getuid() != uid || syscall.Geteuid() != uid {
+		return fmt.Errorf("elevateSUID: UID change verification failed")
+	}
 
-    logVerbose(verbose, "Successfully switched to user: %s", username)
-    return nil
+	logVerbose(verbose, "Successfully switched to user: %s", username)
+	return nil
 }
 
 // dropSUID drops SUID privileges by switching to the current user.
 func dropSUID(verbose bool, username string) error {
-    logVerbose(verbose, "Dropping SUID privileges, switching to user: %s", username)
-    u, err := user.Lookup(username)
-    if err != nil {
-        return fmt.Errorf("dropSUID: failed to lookup user %s: %w", username, err)
-    }
-    uid, err := strconv.Atoi(u.Uid)
-    if err != nil {
-        return fmt.Errorf("dropSUID: invalid UID for user %s: %w", username, err)
-    }
-    gid, err := strconv.Atoi(u.Gid)
-    if err != nil {
-        return fmt.Errorf("dropSUID: invalid GID for user %s: %w", username, err)
-    }
+	logVerbose(verbose, "Dropping SUID privileges, switching to user: %s", username)
+	u, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("dropSUID: failed to lookup user %s: %w", username, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return fmt.Errorf("dropSUID: invalid UID for user %s: %w", username, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return fmt.Errorf("dropSUID: invalid GID for user %s: %w", username, err)
+	}
 
-    // Get supplementary groups
-    gids, err := u.GroupIds()
-    if err != nil {
-        return fmt.Errorf("dropSUID: failed to get supplementary groups for user %s: %w", username, err)
-    }
-    gidList := make([]int, len(gids))
-    for i, g := range gids {
-        gidInt, err := strconv.Atoi(g)
-        if err != nil {
-            return fmt.Errorf("dropSUID: invalid GID in supplementary groups for user %s: %w", username, err)
-        }
-        gidList[i] = gidInt
-    }
+	// Get supplementary groups
+	gids, err := u.GroupIds()
+	if err != nil {
+		return fmt.Errorf("dropSUID: failed to get supplementary groups for user %s: %w", username, err)
+	}
+	gidList := make([]int, len(gids))
+	for i, g := range gids {
+		gidInt, err := strconv.Atoi(g)
+		if err != nil {
+			return fmt.Errorf("dropSUID: invalid GID in supplementary groups for user %s: %w", username, err)
+		}
+		gidList[i] = gidInt
+	}
 
-    // Set supplementary groups
-    if err := syscall.Setgroups(gidList); err != nil {
-        return fmt.Errorf("dropSUID: failed to set supplementary groups: %w", err)
-    }
+	// Set supplementary groups
+	if err := syscall.Setgroups(gidList); err != nil {
+		return fmt.Errorf("dropSUID: failed to set supplementary groups: %w", err)
+	}
 
-    // Set GID
-    if err := syscall.Setgid(gid); err != nil {
-        return fmt.Errorf("dropSUID: failed to set GID: %w", err)
-    }
+	// Set GID
+	if err := syscall.Setgid(gid); err != nil {
+		return fmt.Errorf("dropSUID: failed to set GID: %w", err)
+	}
 
-    // Verify GID change
-    if syscall.Getgid() != gid || syscall.Getegid() != gid {
-        return fmt.Errorf("dropSUID: GID change verification failed")
-    }
+	// Verify GID change
+	if syscall.Getgid() != gid || syscall.Getegid() != gid {
+		return fmt.Errorf("dropSUID: GID change verification failed")
+	}
 
-    // Set UID
-    if err := syscall.Setuid(uid); err != nil {
-        return fmt.Errorf("dropSUID: failed to set UID: %w", err)
-    }
+	// Set UID
+	if err := syscall.Setuid(uid); err != nil {
+		return fmt.Errorf("dropSUID: failed to set UID: %w", err)
+	}
 
-    // Verify UID change
-    if syscall.Getuid() != uid || syscall.Geteuid() != uid {
-        return fmt.Errorf("dropSUID: UID change verification failed")
-    }
+	// Verify UID change
+	if syscall.Getuid() != uid || syscall.Geteuid() != uid {
+		return fmt.Errorf("dropSUID: UID change verification failed")
+	}
 
-    logVerbose(verbose, "Successfully switched to user: %s", username)
-    return nil
+	logVerbose(verbose, "Successfully switched to user: %s", username)
+	return nil
 }
 
 // processMapFile processes the map file and writes secrets with proper resource cleanup.
 func processMapFile(ctx context.Context, client OPClient, mapFilePath string, currentUser *user.User, verbose bool, fw fileWriter) error {
-    logVerbose(verbose, "Processing map file: %s", mapFilePath)
-    mapFile, err := os.Open(mapFilePath)
-    if err != nil {
-        return fmt.Errorf("processMapFile: failed to open map file: %w", err)
-    }
-    defer mapFile.Close()
+	logVerbose(verbose, "Processing map file: %s", mapFilePath)
+	mapFile, err := os.Open(mapFilePath)
+	if err != nil {
+		return fmt.Errorf("processMapFile: failed to open map file: %w", err)
+	}
+	defer mapFile.Close()
 
-    scanner := bufio.NewScanner(mapFile)
-    lineNumber := 0
+	scanner := bufio.NewScanner(mapFile)
+	lineNumber := 0
 
-    // Track directories and files we create
-    createdDirs := make(map[string]bool)
-    createdFiles := make(map[string]bool)
+	// Track directories and files we create
+	createdDirs := make(map[string]bool)
+	createdFiles := make(map[string]bool)
 
-    for scanner.Scan() {
-        lineNumber++
-        line := scanner.Text()
-        parts := strings.Split(line, "\t")
-        if len(parts) != 3 {
-            return fmt.Errorf("processMapFile: invalid map file entry at line %d: %s", lineNumber, line)
-        }
-        username := parts[0]
-        secretRef := parts[1]
-        filePath := parts[2]
+	for scanner.Scan() {
+		lineNumber++
+		line := scanner.Text()
+		parts := strings.Split(line, "\t")
+		if len(parts) != 3 {
+			return fmt.Errorf("processMapFile: invalid map file entry at line %d: %s", lineNumber, line)
+		}
+		username := parts[0]
+		secretRef := parts[1]
+		filePath := parts[2]
 
-        // Process only entries for the current user.
-        if username != currentUser.Username {
-            if verbose {
-                logVerbose(verbose, "Skipping line %d: not for current user", lineNumber)
-            }
-            continue
-        }
+		// Process only entries for the current user.
+		if username != currentUser.Username {
+			if verbose {
+				logVerbose(verbose, "Skipping line %d: not for current user", lineNumber)
+			}
+			continue
+		}
 
-        logVerbose(verbose, "Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
-        logVerbose(verbose, "Resolving secret: %s", secretRef)
-        secret, err := client.Secrets().Resolve(ctx, secretRef)
-        if err != nil {
-            return fmt.Errorf("processMapFile: failed to resolve secret %s: %w", secretRef, err)
-        }
-        logVerbose(verbose, "Secret resolved successfully: %s", secretRef)
+		logVerbose(verbose, "Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
+		logVerbose(verbose, "Resolving secret: %s", secretRef)
+		secret, err := client.Secrets().Resolve(ctx, secretRef)
+		if err != nil {
+			return fmt.Errorf("processMapFile: failed to resolve secret %s: %w", secretRef, err)
+		}
+		logVerbose(verbose, "Secret resolved successfully: %s", secretRef)
 
-        dir := filepath.Dir(filePath)
-        logVerbose(verbose, "Creating directory: %s", dir)
+		dir := filepath.Dir(filePath)
+		logVerbose(verbose, "Creating directory: %s", dir)
 
-        // Check if the directory already exists
-        if _, err := os.Stat(dir); os.IsNotExist(err) {
-            // Directory does not exist, create it
-            if err := fw.MkdirAll(dir, 0700); err != nil {
-                return fmt.Errorf("processMapFile: failed to create directory %s: %w", dir, err)
-            }
-            createdDirs[dir] = true // Track that we created this directory
-        }
+		// Check if the directory already exists
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			// Directory does not exist, create it
+			if err := fw.MkdirAll(dir, 0700); err != nil {
+				return fmt.Errorf("processMapFile: failed to create directory %s: %w", dir, err)
+			}
+			createdDirs[dir] = true // Track that we created this directory
+		}
 
-        logVerbose(verbose, "Writing secret to file: %s", filePath)
-        if err := fw.WriteFile(filePath, []byte(secret), 0600); err != nil {
-            return fmt.Errorf("processMapFile: failed to write secret to %s: %w", filePath, err)
-        }
-        createdFiles[filePath] = true // Track that we created this file
+		logVerbose(verbose, "Writing secret to file: %s", filePath)
+		if err := fw.WriteFile(filePath, []byte(secret), 0600); err != nil {
+			return fmt.Errorf("processMapFile: failed to write secret to %s: %w", filePath, err)
+		}
+		createdFiles[filePath] = true // Track that we created this file
 
-        uid, _ := strconv.Atoi(currentUser.Uid)
-        gid, _ := strconv.Atoi(currentUser.Gid)
+		uid, _ := strconv.Atoi(currentUser.Uid)
+		gid, _ := strconv.Atoi(currentUser.Gid)
 
-        // Verify and set ownership for the file
-        logVerbose(verbose, "Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
-        if err := fw.Chown(filePath, uid, gid); err != nil {
-            return fmt.Errorf("processMapFile: failed to change ownership of file %s: %w", filePath, err)
-        }
+		// Verify and set ownership for the file
+		logVerbose(verbose, "Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
+		if err := fw.Chown(filePath, uid, gid); err != nil {
+			return fmt.Errorf("processMapFile: failed to change ownership of file %s: %w", filePath, err)
+		}
 
-        // Verify file ownership and permissions (only if we created it)
-        if createdFiles[filePath] {
-            if err := verifyPermissionsAndOwnership(filePath, 0600, currentUser, verbose, fw); err != nil {
-                return fmt.Errorf("processMapFile: file %s permission/ownership verification failed: %w", filePath, err)
-            }
-        }
+		// Verify file ownership and permissions (only if we created it)
+		if createdFiles[filePath] {
+			if err := verifyPermissionsAndOwnership(filePath, 0600, currentUser, verbose, fw); err != nil {
+				return fmt.Errorf("processMapFile: file %s permission/ownership verification failed: %w", filePath, err)
+			}
+		}
 
-        // Verify and set ownership for the directory (only if we created it)
-        if createdDirs[dir] {
-            logVerbose(verbose, "Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
-            if err := fw.Chown(dir, uid, gid); err != nil {
-                return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
-            }
+		// Verify and set ownership for the directory (only if we created it)
+		if createdDirs[dir] {
+			logVerbose(verbose, "Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
+			if err := fw.Chown(dir, uid, gid); err != nil {
+				return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
+			}
 
-            if err := verifyPermissionsAndOwnership(dir, 0700, currentUser, verbose, fw); err != nil {
-                return fmt.Errorf("processMapFile: directory %s permission/ownership verification failed: %w", dir, err)
-            }
-        }
+			if err := verifyPermissionsAndOwnership(dir, 0700, currentUser, verbose, fw); err != nil {
+				return fmt.Errorf("processMapFile: directory %s permission/ownership verification failed: %w", dir, err)
+			}
+		}
 
-        fmt.Printf("Successfully wrote secret to %s\n", filePath)
-    }
+		fmt.Printf("Successfully wrote secret to %s\n", filePath)
+	}
 
-    if err := scanner.Err(); err != nil {
-        return fmt.Errorf("processMapFile: error reading map file: %w", err)
-    }
-    return nil
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("processMapFile: error reading map file: %w", err)
+	}
+	return nil
 }
 
 // verifyPermissionsAndOwnership checks if the file or directory has the expected permissions and ownership.
 func verifyPermissionsAndOwnership(path string, expectedPerm os.FileMode, currentUser *user.User, verbose bool, fw fileWriter) error {
-	// For MockFileWriter, check if the file or directory exists in the in-memory maps
-	if mockFW, ok := fw.(*MockFileWriter); ok {
-		// Check if it's a file
-		if _, exists := mockFW.FilesWritten[path]; exists {
-			logVerbose(verbose, "Mock file %s exists, skipping permission/ownership verification", path)
-			return nil
-		}
-		// Check if it's a directory
-		if _, exists := mockFW.DirsCreated[path]; exists {
-			logVerbose(verbose, "Mock directory %s exists, skipping permission/ownership verification", path)
-			return nil
-		}
-		return fmt.Errorf("verifyPermissionsAndOwnership: file or directory %s does not exist in mock file writer", path)
-	}
-
-	// For real files, perform the actual check
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("verifyPermissionsAndOwnership: failed to stat %s: %w", path, err)
@@ -449,55 +433,55 @@ func readAPIKey(verbose bool, apiKeyPath string) (string, error) {
 
 // setupContext creates a context with a timeout and cancellation.
 func setupContext(timeout time.Duration) (context.Context, context.CancelFunc) {
-    return context.WithTimeout(context.Background(), timeout)
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 // initializeClient initializes the 1Password client with enhanced context handling.
 func initializeClient(ctx context.Context, apiKey string) (OPClient, error) {
-    client, err := onepassword.NewClient(
-        ctx,
-        onepassword.WithServiceAccountToken(strings.TrimSpace(apiKey)),
-        onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
-    )
-    if err != nil {
-        return nil, fmt.Errorf("initializeClient: failed to create client: %w", err)
-    }
-    return &onePasswordClientAdapter{client: client}, nil
+	client, err := onepassword.NewClient(
+		ctx,
+		onepassword.WithServiceAccountToken(strings.TrimSpace(apiKey)),
+		onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initializeClient: failed to create client: %w", err)
+	}
+	return &onePasswordClientAdapter{client: client}, nil
 }
 
 // getTimeoutForOperation returns a timeout duration based on the operation type.
 func getTimeoutForOperation(operation string) time.Duration {
-    switch operation {
-    case "resolveSecret":
-        return 15 * time.Second
-    case "writeFile":
-        return 10 * time.Second
-    case "createDirectory":
-        return 5 * time.Second
-    default:
-        return 10 * time.Second
-    }
+	switch operation {
+	case "resolveSecret":
+		return 15 * time.Second
+	case "writeFile":
+		return 10 * time.Second
+	case "createDirectory":
+		return 5 * time.Second
+	default:
+		return 10 * time.Second
+	}
 }
 
 // resolveSecretWithTimeout resolves a secret with a specific timeout.
 func resolveSecretWithTimeout(ctx context.Context, client OPClient, secretRef string) (string, error) {
-    timeout := getTimeoutForOperation("resolveSecret")
-    ctx, cancel := context.WithTimeout(ctx, timeout)
-    defer cancel()
+	timeout := getTimeoutForOperation("resolveSecret")
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
-    return client.Secrets().Resolve(ctx, secretRef)
+	return client.Secrets().Resolve(ctx, secretRef)
 }
 
 // handleSignals sets up signal handling for graceful shutdown.
 func handleSignals(cancel context.CancelFunc) {
-    sigChan := make(chan os.Signal, 1)
-    signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-    go func() {
-        sig := <-sigChan
-        log.Printf("Received signal: %v", sig) // Use log.Printf instead of fmt.Printf
-        cancel()
-    }()
+	go func() {
+		sig := <-sigChan
+		log.Printf("Received signal: %v", sig) // Use log.Printf instead of fmt.Printf
+		cancel()
+	}()
 }
 
 // cleanupSecretFiles removes files that would have been created by the 1Password Secret Manager.
@@ -505,133 +489,133 @@ func handleSignals(cancel context.CancelFunc) {
 // Only files are removed; directories are left intact.
 // Returns an error if any file cannot be removed.
 func cleanupSecretFiles(mapFilePath string, currentUser *user.User, verbose bool) error {
-    logVerbose(verbose, "Processing map file for cleanup: %s", mapFilePath)
-    mapFile, err := os.Open(mapFilePath)
-    if err != nil {
-        return fmt.Errorf("cleanupSecretFiles: failed to open map file: %w", err)
-    }
-    defer mapFile.Close()
+	logVerbose(verbose, "Processing map file for cleanup: %s", mapFilePath)
+	mapFile, err := os.Open(mapFilePath)
+	if err != nil {
+		return fmt.Errorf("cleanupSecretFiles: failed to open map file: %w", err)
+	}
+	defer mapFile.Close()
 
-    scanner := bufio.NewScanner(mapFile)
-    lineNumber := 0
+	scanner := bufio.NewScanner(mapFile)
+	lineNumber := 0
 
-    for scanner.Scan() {
-        lineNumber++
-        line := scanner.Text()
-        parts := strings.Split(line, "\t")
-        if len(parts) != 3 {
-            return fmt.Errorf("cleanupSecretFiles: invalid map file entry at line %d: %s", lineNumber, line)
-        }
-        username := parts[0]
-        filePath := parts[2]
+	for scanner.Scan() {
+		lineNumber++
+		line := scanner.Text()
+		parts := strings.Split(line, "\t")
+		if len(parts) != 3 {
+			return fmt.Errorf("cleanupSecretFiles: invalid map file entry at line %d: %s", lineNumber, line)
+		}
+		username := parts[0]
+		filePath := parts[2]
 
-        // Process only entries for the current user.
-        if username != currentUser.Username {
-            logVerbose(verbose, "Skipping line %d: file %s belongs to user %s, not current user %s", lineNumber, filePath, username, currentUser.Username)
-            continue
-        }
+		// Process only entries for the current user.
+		if username != currentUser.Username {
+			logVerbose(verbose, "Skipping line %d: file %s belongs to user %s, not current user %s", lineNumber, filePath, username, currentUser.Username)
+			continue
+		}
 
-        logVerbose(verbose, "Processing cleanup for file: %s", filePath)
+		logVerbose(verbose, "Processing cleanup for file: %s", filePath)
 
-        // Check if the file exists.
-        if _, err := os.Stat(filePath); os.IsNotExist(err) {
-            logVerbose(verbose, "File does not exist, skipping: %s", filePath)
-            continue
-        }
+		// Check if the file exists.
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			logVerbose(verbose, "File does not exist, skipping: %s", filePath)
+			continue
+		}
 
-        // Remove the file.
-        if err := os.Remove(filePath); err != nil {
-            return fmt.Errorf("cleanupSecretFiles: failed to remove file %s: %w", filePath, err)
-        }
+		// Remove the file.
+		if err := os.Remove(filePath); err != nil {
+			return fmt.Errorf("cleanupSecretFiles: failed to remove file %s: %w", filePath, err)
+		}
 
-        logVerbose(verbose, "Successfully removed file: %s", filePath)
-    }
+		logVerbose(verbose, "Successfully removed file: %s", filePath)
+	}
 
-    if err := scanner.Err(); err != nil {
-        return fmt.Errorf("cleanupSecretFiles: error reading map file: %w", err)
-    }
-    return nil
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("cleanupSecretFiles: error reading map file: %w", err)
+	}
+	return nil
 }
 
 // main is the entry point of the program with graceful shutdown.
 func main() {
-    verbose := flag.Bool("v", false, "Enable verbose logging")
-    cleanup := flag.Bool("cleanup", false, "Remove files created by the 1Password Secret Manager")
-    flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
-    flag.Parse()
+	verbose := flag.Bool("v", false, "Enable verbose logging")
+	cleanup := flag.Bool("cleanup", false, "Remove files created by the 1Password Secret Manager")
+	flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
+	flag.Parse()
 
-    logVerbose(*verbose, "Starting program with verbose logging enabled")
+	logVerbose(*verbose, "Starting program with verbose logging enabled")
 
-    // Set up context with timeout
-    ctx, cancel := setupContext(opTimeout)
-    defer cancel()
+	// Set up context with timeout
+	ctx, cancel := setupContext(opTimeout)
+	defer cancel()
 
-    // Handle signals for graceful shutdown
-    handleSignals(cancel)
+	// Handle signals for graceful shutdown
+	handleSignals(cancel)
 
-    // Determine SUID user.
-    suidUser, err := getSUIDUser(*verbose)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
-    }
+	// Determine SUID user.
+	suidUser, err := getSUIDUser(*verbose)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
-    // Get current user.
-    currentUser, err := user.Current()
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
-    }
-    logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
+	// Get current user.
+	currentUser, err := user.Current()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
 
-    // Elevate to SUID user.
-    if err := elevateSUID(*verbose, suidUser); err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
-    }
+	// Elevate to SUID user.
+	if err := elevateSUID(*verbose, suidUser); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
-    // Read configuration.
-    apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
-    }
+	// Read configuration.
+	apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
-    // Read API key.
-    apiKey, err := readAPIKey(*verbose, apiKeyPath)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
-    }
+	// Read API key.
+	apiKey, err := readAPIKey(*verbose, apiKeyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
-    // Drop SUID privileges.
-    if err := dropSUID(*verbose, currentUser.Username); err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
-    }
+	// Drop SUID privileges.
+	if err := dropSUID(*verbose, currentUser.Username); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
-    // Initialize 1Password client.
-    ctx, cancel = setupContext(opTimeout)
-    defer cancel()
+	// Initialize 1Password client.
+	ctx, cancel = setupContext(opTimeout)
+	defer cancel()
 
-    client, err := initializeClient(ctx, apiKey)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
-    }
-    logVerbose(*verbose, "1Password client initialized successfully")
+	client, err := initializeClient(ctx, apiKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	logVerbose(*verbose, "1Password client initialized successfully")
 
-    // Process the map file or cleanup files.
-    if *cleanup {
-        if err := cleanupSecretFiles(mapFilePath, currentUser, *verbose); err != nil {
-            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-            os.Exit(1)
-        }
-        fmt.Println("Cleanup completed successfully")
-    } else {
-        if err := processMapFile(ctx, client, mapFilePath, currentUser, *verbose, osFileWriter{}); err != nil {
-            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-            os.Exit(1)
-        }
-    }
+	// Process the map file or cleanup files.
+	if *cleanup {
+		if err := cleanupSecretFiles(mapFilePath, currentUser, *verbose); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Cleanup completed successfully")
+	} else {
+		if err := processMapFile(ctx, client, mapFilePath, currentUser, *verbose, osFileWriter{}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
 }
