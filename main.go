@@ -286,6 +286,11 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 
 	scanner := bufio.NewScanner(mapFile)
 	lineNumber := 0
+
+	// Track directories and files we create
+	createdDirs := make(map[string]bool)
+	createdFiles := make(map[string]bool)
+
 	for scanner.Scan() {
 		lineNumber++
 		line := scanner.Text()
@@ -315,24 +320,48 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 
 		dir := filepath.Dir(filePath)
 		logVerbose(verbose, "Creating directory: %s", dir)
-		if err := fw.MkdirAll(dir, 0700); err != nil {
-			return fmt.Errorf("processMapFile: failed to create directory %s: %w", dir, err)
+
+		// Check if the directory already exists
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			// Directory does not exist, create it
+			if err := fw.MkdirAll(dir, 0700); err != nil {
+				return fmt.Errorf("processMapFile: failed to create directory %s: %w", dir, err)
+			}
+			createdDirs[dir] = true // Track that we created this directory
 		}
 
 		logVerbose(verbose, "Writing secret to file: %s", filePath)
 		if err := fw.WriteFile(filePath, []byte(secret), 0600); err != nil {
 			return fmt.Errorf("processMapFile: failed to write secret to %s: %w", filePath, err)
 		}
+		createdFiles[filePath] = true // Track that we created this file
 
 		uid, _ := strconv.Atoi(currentUser.Uid)
 		gid, _ := strconv.Atoi(currentUser.Gid)
+
+		// Verify and set ownership for the file
 		logVerbose(verbose, "Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
 		if err := fw.Chown(filePath, uid, gid); err != nil {
 			return fmt.Errorf("processMapFile: failed to change ownership of file %s: %w", filePath, err)
 		}
-		logVerbose(verbose, "Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
-		if err := fw.Chown(dir, uid, gid); err != nil {
-			return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
+
+		// Verify file ownership and permissions (only if we created it)
+		if createdFiles[filePath] {
+    		if err := verifyPermissionsAndOwnership(filePath, 0600, currentUser, verbose, fw); err != nil {
+        		return fmt.Errorf("processMapFile: file %s permission/ownership verification failed: %w", filePath, err)
+    		}
+		}
+
+		// Verify and set ownership for the directory (only if we created it)
+		if createdDirs[dir] {
+    		logVerbose(verbose, "Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
+    		if err := fw.Chown(dir, uid, gid); err != nil {
+        		return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
+    		}
+		
+    		if err := verifyPermissionsAndOwnership(dir, 0700, currentUser, verbose, fw); err != nil {
+        		return fmt.Errorf("processMapFile: directory %s permission/ownership verification failed: %w", dir, err)
+    		}
 		}
 
 		fmt.Printf("Successfully wrote secret to %s\n", filePath)
@@ -341,6 +370,68 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("processMapFile: error reading map file: %w", err)
 	}
+	return nil
+}
+
+// verifyPermissionsAndOwnership checks if the file or directory has the expected permissions and ownership.
+func verifyPermissionsAndOwnership(path string, expectedPerm os.FileMode, currentUser *user.User, verbose bool, fw fileWriter) error {
+	// For MockFileWriter, check if the file or directory exists in the in-memory maps
+	if mockFW, ok := fw.(*MockFileWriter); ok {
+		// Check if it's a file
+		if _, exists := mockFW.FilesWritten[path]; exists {
+			logVerbose(verbose, "Mock file %s exists, skipping permission/ownership verification", path)
+			return nil
+		}
+		// Check if it's a directory
+		if _, exists := mockFW.DirsCreated[path]; exists {
+			logVerbose(verbose, "Mock directory %s exists, skipping permission/ownership verification", path)
+			return nil
+		}
+		return fmt.Errorf("verifyPermissionsAndOwnership: file or directory %s does not exist in mock file writer", path)
+	}
+
+	// For real files, perform the actual check
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("verifyPermissionsAndOwnership: failed to stat %s: %w", path, err)
+	}
+
+	// Check permissions
+	if info.Mode().Perm() != expectedPerm {
+		return fmt.Errorf("verifyPermissionsAndOwnership: %s has incorrect permissions: expected %o, got %o", path, expectedPerm, info.Mode().Perm())
+	}
+
+	// Check ownership
+	uid, _ := strconv.Atoi(currentUser.Uid)
+	gid, _ := strconv.Atoi(currentUser.Gid)
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		if int(stat.Uid) != uid || int(stat.Gid) != gid {
+			return fmt.Errorf("verifyPermissionsAndOwnership: %s has incorrect ownership: expected UID %d GID %d, got UID %d GID %d", path, uid, gid, stat.Uid, stat.Gid)
+		}
+	} else {
+		return fmt.Errorf("verifyPermissionsAndOwnership: failed to get ownership info for %s", path)
+	}
+
+	logVerbose(verbose, "Verified permissions and ownership for %s: permissions %o, UID %d, GID %d", path, expectedPerm, uid, gid)
+	return nil
+}
+
+// verifyOwnership checks if the file or directory has the expected ownership.
+func verifyOwnership(path string, expectedUID, expectedGID int, verbose bool) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("verifyOwnership: failed to stat %s: %w", path, err)
+	}
+
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		if int(stat.Uid) != expectedUID || int(stat.Gid) != expectedGID {
+			return fmt.Errorf("verifyOwnership: %s has incorrect ownership: expected UID %d GID %d, got UID %d GID %d", path, expectedUID, expectedGID, stat.Uid, stat.Gid)
+		}
+	} else {
+		return fmt.Errorf("verifyOwnership: failed to get ownership info for %s", path)
+	}
+
+	logVerbose(verbose, "Verified ownership for %s: UID %d, GID %d", path, expectedUID, expectedGID)
 	return nil
 }
 

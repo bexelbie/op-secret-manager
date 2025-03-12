@@ -16,9 +16,9 @@ type MockFileWriter struct {
 	WriteFileFunc func(filename string, data []byte, perm os.FileMode) error
 	MkdirAllFunc  func(path string, perm os.FileMode) error
 	ChownFunc     func(name string, uid, gid int) error
-	FilesWritten  map[string][]byte
-	DirsCreated   []string
-	FilesChowned  map[string][]int
+	FilesWritten  map[string][]byte // Tracks files and their content
+	DirsCreated   map[string]os.FileMode // Tracks directories and their permissions
+	FilesChowned  map[string][]int  // Tracks files and their ownership
 }
 
 func (m *MockFileWriter) WriteFile(filename string, data []byte, perm os.FileMode) error {
@@ -36,7 +36,10 @@ func (m *MockFileWriter) MkdirAll(path string, perm os.FileMode) error {
 	if m.MkdirAllFunc != nil {
 		return m.MkdirAllFunc(path, perm)
 	}
-	m.DirsCreated = append(m.DirsCreated, path)
+	if m.DirsCreated == nil {
+		m.DirsCreated = make(map[string]os.FileMode)
+	}
+	m.DirsCreated[path] = perm
 	return nil
 }
 
@@ -207,14 +210,15 @@ func TestSUIDFunctions(t *testing.T) {
 	}
 }
 
-// TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
 	if err != nil {
 		t.Fatalf("Failed to get current user: %v", err)
 	}
+
+	// Update the map file content to include a new directory
 	mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	/tmp/testfile1
-%s	op://vault/item/field2	/tmp/testfile2
+%s	op://vault/item/field2	/tmp/newdir/testfile2
 otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentUser.Username)
 
 	tmpMapFile, err := os.CreateTemp("", "testmap")
@@ -227,11 +231,6 @@ otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentU
 		t.Fatal(err)
 	}
 	tmpMapFile.Close()
-
-	currentUser, err = user.Current()
-	if err != nil {
-		t.Fatalf("Failed to get current user: %v", err)
-	}
 
 	mockClient := &MockOnePasswordClient{
 		ResolveSecretFunc: func(ctx context.Context, secretRef string) (string, error) {
@@ -250,7 +249,7 @@ otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentU
 
 	mockFileWriter := &MockFileWriter{
 		FilesWritten: make(map[string][]byte),
-		DirsCreated:  make([]string, 0),
+		DirsCreated:  make(map[string]os.FileMode), // Correct initialization
 		FilesChowned: make(map[string][]int),
 	}
 
@@ -259,42 +258,47 @@ otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentU
 		t.Fatalf("processMapFile failed: %v", err)
 	}
 
+	// Verify file contents
 	if string(mockFileWriter.FilesWritten["/tmp/testfile1"]) != "secret1" {
 		t.Errorf("File /tmp/testfile1 content mismatch: expected 'secret1', got '%s'", string(mockFileWriter.FilesWritten["/tmp/testfile1"]))
 	}
-	if string(mockFileWriter.FilesWritten["/tmp/testfile2"]) != "secret2" {
-		t.Errorf("File /tmp/testfile2 content mismatch: expected 'secret2', got '%s'", string(mockFileWriter.FilesWritten["/tmp/testfile2"]))
+	if string(mockFileWriter.FilesWritten["/tmp/newdir/testfile2"]) != "secret2" {
+		t.Errorf("File /tmp/newdir/testfile2 content mismatch: expected 'secret2', got '%s'", string(mockFileWriter.FilesWritten["/tmp/newdir/testfile2"]))
 	}
 	if _, ok := mockFileWriter.FilesWritten["/tmp/testfile3"]; ok {
 		t.Errorf("File /tmp/testfile3 should not have been written")
 	}
 
-	// Assert that the expected directories were created (unique directories)
-	expectedDirs := map[string]bool{"/tmp": true}
-	uniqueDirs := make(map[string]bool)
-	for _, d := range mockFileWriter.DirsCreated {
-		uniqueDirs[d] = true
+	// Verify that the new directory was created
+	expectedDirs := map[string]os.FileMode{
+		"/tmp/newdir": 0700, // Expected directory and its permissions
 	}
-	if len(uniqueDirs) != len(expectedDirs) {
-		t.Errorf("Unique DirsCreated length mismatch: expected %d, got %d", len(expectedDirs), len(uniqueDirs))
+	for dir, expectedPerm := range expectedDirs {
+		actualPerm, exists := mockFileWriter.DirsCreated[dir]
+		if !exists {
+			t.Errorf("Directory %s was not created", dir)
+		} else if actualPerm != expectedPerm {
+			t.Errorf("Directory %s permissions mismatch: expected %o, got %o", dir, expectedPerm, actualPerm)
+		}
 	}
 
+	// Verify ownership of the files and directories
 	uid, _ := strconv.Atoi(currentUser.Uid)
 	gid, _ := strconv.Atoi(currentUser.Gid)
 	expectedChowns := map[string][]int{
-		"/tmp/testfile1": {uid, gid},
-		"/tmp":          {uid, gid},
-		"/tmp/testfile2": {uid, gid},
+		"/tmp/testfile1":       {uid, gid},
+		"/tmp/newdir/testfile2": {uid, gid},
+		"/tmp/newdir":          {uid, gid}, // Verify directory ownership
 	}
 
 	for file, expectedUidGid := range expectedChowns {
 		actualUidGid, ok := mockFileWriter.FilesChowned[file]
 		if !ok {
-			t.Errorf("File %s was not chowned", file)
+			t.Errorf("File or directory %s was not chowned", file)
 			continue
 		}
 		if actualUidGid[0] != expectedUidGid[0] || actualUidGid[1] != expectedUidGid[1] {
-			t.Errorf("File %s chown mismatch: expected UID %d GID %d, got UID %d GID %d", file, expectedUidGid[0], expectedUidGid[1], actualUidGid[0], actualUidGid[1])
+			t.Errorf("File or directory %s chown mismatch: expected UID %d GID %d, got UID %d GID %d", file, expectedUidGid[0], expectedUidGid[1], actualUidGid[0], actualUidGid[1])
 		}
 	}
 }
