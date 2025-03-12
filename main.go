@@ -276,6 +276,35 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 	return nil
 }
 
+// initializeClient initializes the 1Password client.
+func initializeClient(ctx context.Context, apiKey string) (OPClient, error) {
+	client, err := onepassword.NewClient(
+		ctx,
+		onepassword.WithServiceAccountToken(strings.TrimSpace(apiKey)),
+		onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initializeClient: failed to create client: %w", err)
+	}
+	return &onePasswordClientAdapter{client: client}, nil
+}
+
+// readAPIKey reads the API key from the specified path.
+func readAPIKey(verbose bool, apiKeyPath string) (string, error) {
+	logVerbose(verbose, "Reading API key from: %s", apiKeyPath)
+	apiKey, err := os.ReadFile(apiKeyPath)
+	if err != nil {
+		return "", fmt.Errorf("readAPIKey: failed to read API key: %w", err)
+	}
+	return string(apiKey), nil
+}
+
+// setupContext creates a context with a timeout.
+func setupContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), timeout)
+}
+
+// main is the entry point of the program.
 func main() {
 	verbose := flag.Bool("v", false, "Enable verbose logging")
 	flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
@@ -311,8 +340,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	logVerbose(*verbose, "Reading API key from: %s", apiKeyPath)
-	apiKey, err := os.ReadFile(apiKeyPath)
+	// Read API key.
+	apiKey, err := readAPIKey(*verbose, apiKeyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -325,24 +354,18 @@ func main() {
 	}
 
 	// Initialize 1Password client.
-	logVerbose(*verbose, "Initializing 1Password client")
-	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	ctx, cancel := setupContext(opTimeout)
 	defer cancel()
 
-	client, err := onepassword.NewClient(
-		ctx,
-		onepassword.WithServiceAccountToken(strings.TrimSpace(string(apiKey))),
-		onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
-	)
+	client, err := initializeClient(ctx, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 	logVerbose(*verbose, "1Password client initialized successfully")
 
-	// Wrap the client in an adapter and process the map file.
-	adapter := &onePasswordClientAdapter{client: client}
-	if err := processMapFile(ctx, adapter, mapFilePath, currentUser, *verbose, osFileWriter{}); err != nil {
+	// Process the map file.
+	if err := processMapFile(ctx, client, mapFilePath, currentUser, *verbose, osFileWriter{}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
