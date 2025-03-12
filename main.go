@@ -5,7 +5,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+    "log"
 	"os"
+    "os/signal"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -275,102 +277,102 @@ func dropSUID(verbose bool, username string) error {
     return nil
 }
 
-// processMapFile processes the map file and writes secrets.
+// processMapFile processes the map file and writes secrets with proper resource cleanup.
 func processMapFile(ctx context.Context, client OPClient, mapFilePath string, currentUser *user.User, verbose bool, fw fileWriter) error {
-	logVerbose(verbose, "Processing map file: %s", mapFilePath)
-	mapFile, err := os.Open(mapFilePath)
-	if err != nil {
-		return fmt.Errorf("processMapFile: failed to open map file: %w", err)
-	}
-	defer mapFile.Close()
+    logVerbose(verbose, "Processing map file: %s", mapFilePath)
+    mapFile, err := os.Open(mapFilePath)
+    if err != nil {
+        return fmt.Errorf("processMapFile: failed to open map file: %w", err)
+    }
+    defer mapFile.Close()
 
-	scanner := bufio.NewScanner(mapFile)
-	lineNumber := 0
+    scanner := bufio.NewScanner(mapFile)
+    lineNumber := 0
 
-	// Track directories and files we create
-	createdDirs := make(map[string]bool)
-	createdFiles := make(map[string]bool)
+    // Track directories and files we create
+    createdDirs := make(map[string]bool)
+    createdFiles := make(map[string]bool)
 
-	for scanner.Scan() {
-		lineNumber++
-		line := scanner.Text()
-		parts := strings.Split(line, "\t")
-		if len(parts) != 3 {
-			return fmt.Errorf("processMapFile: invalid map file entry at line %d: %s", lineNumber, line)
-		}
-		username := parts[0]
-		secretRef := parts[1]
-		filePath := parts[2]
+    for scanner.Scan() {
+        lineNumber++
+        line := scanner.Text()
+        parts := strings.Split(line, "\t")
+        if len(parts) != 3 {
+            return fmt.Errorf("processMapFile: invalid map file entry at line %d: %s", lineNumber, line)
+        }
+        username := parts[0]
+        secretRef := parts[1]
+        filePath := parts[2]
 
-		// Process only entries for the current user.
-		if username != currentUser.Username {
-			if verbose {
-				logVerbose(verbose, "Skipping line %d: not for current user", lineNumber)
-			}
-			continue
-		}
+        // Process only entries for the current user.
+        if username != currentUser.Username {
+            if verbose {
+                logVerbose(verbose, "Skipping line %d: not for current user", lineNumber)
+            }
+            continue
+        }
 
-		logVerbose(verbose, "Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
-		logVerbose(verbose, "Resolving secret: %s", secretRef)
-		secret, err := client.Secrets().Resolve(ctx, secretRef)
-		if err != nil {
-			return fmt.Errorf("processMapFile: failed to resolve secret %s: %w", secretRef, err)
-		}
-		logVerbose(verbose, "Secret resolved successfully: %s", secretRef)
+        logVerbose(verbose, "Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
+        logVerbose(verbose, "Resolving secret: %s", secretRef)
+        secret, err := client.Secrets().Resolve(ctx, secretRef)
+        if err != nil {
+            return fmt.Errorf("processMapFile: failed to resolve secret %s: %w", secretRef, err)
+        }
+        logVerbose(verbose, "Secret resolved successfully: %s", secretRef)
 
-		dir := filepath.Dir(filePath)
-		logVerbose(verbose, "Creating directory: %s", dir)
+        dir := filepath.Dir(filePath)
+        logVerbose(verbose, "Creating directory: %s", dir)
 
-		// Check if the directory already exists
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			// Directory does not exist, create it
-			if err := fw.MkdirAll(dir, 0700); err != nil {
-				return fmt.Errorf("processMapFile: failed to create directory %s: %w", dir, err)
-			}
-			createdDirs[dir] = true // Track that we created this directory
-		}
+        // Check if the directory already exists
+        if _, err := os.Stat(dir); os.IsNotExist(err) {
+            // Directory does not exist, create it
+            if err := fw.MkdirAll(dir, 0700); err != nil {
+                return fmt.Errorf("processMapFile: failed to create directory %s: %w", dir, err)
+            }
+            createdDirs[dir] = true // Track that we created this directory
+        }
 
-		logVerbose(verbose, "Writing secret to file: %s", filePath)
-		if err := fw.WriteFile(filePath, []byte(secret), 0600); err != nil {
-			return fmt.Errorf("processMapFile: failed to write secret to %s: %w", filePath, err)
-		}
-		createdFiles[filePath] = true // Track that we created this file
+        logVerbose(verbose, "Writing secret to file: %s", filePath)
+        if err := fw.WriteFile(filePath, []byte(secret), 0600); err != nil {
+            return fmt.Errorf("processMapFile: failed to write secret to %s: %w", filePath, err)
+        }
+        createdFiles[filePath] = true // Track that we created this file
 
-		uid, _ := strconv.Atoi(currentUser.Uid)
-		gid, _ := strconv.Atoi(currentUser.Gid)
+        uid, _ := strconv.Atoi(currentUser.Uid)
+        gid, _ := strconv.Atoi(currentUser.Gid)
 
-		// Verify and set ownership for the file
-		logVerbose(verbose, "Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
-		if err := fw.Chown(filePath, uid, gid); err != nil {
-			return fmt.Errorf("processMapFile: failed to change ownership of file %s: %w", filePath, err)
-		}
+        // Verify and set ownership for the file
+        logVerbose(verbose, "Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
+        if err := fw.Chown(filePath, uid, gid); err != nil {
+            return fmt.Errorf("processMapFile: failed to change ownership of file %s: %w", filePath, err)
+        }
 
-		// Verify file ownership and permissions (only if we created it)
-		if createdFiles[filePath] {
-    		if err := verifyPermissionsAndOwnership(filePath, 0600, currentUser, verbose, fw); err != nil {
-        		return fmt.Errorf("processMapFile: file %s permission/ownership verification failed: %w", filePath, err)
-    		}
-		}
+        // Verify file ownership and permissions (only if we created it)
+        if createdFiles[filePath] {
+            if err := verifyPermissionsAndOwnership(filePath, 0600, currentUser, verbose, fw); err != nil {
+                return fmt.Errorf("processMapFile: file %s permission/ownership verification failed: %w", filePath, err)
+            }
+        }
 
-		// Verify and set ownership for the directory (only if we created it)
-		if createdDirs[dir] {
-    		logVerbose(verbose, "Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
-    		if err := fw.Chown(dir, uid, gid); err != nil {
-        		return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
-    		}
-		
-    		if err := verifyPermissionsAndOwnership(dir, 0700, currentUser, verbose, fw); err != nil {
-        		return fmt.Errorf("processMapFile: directory %s permission/ownership verification failed: %w", dir, err)
-    		}
-		}
+        // Verify and set ownership for the directory (only if we created it)
+        if createdDirs[dir] {
+            logVerbose(verbose, "Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
+            if err := fw.Chown(dir, uid, gid); err != nil {
+                return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
+            }
 
-		fmt.Printf("Successfully wrote secret to %s\n", filePath)
-	}
+            if err := verifyPermissionsAndOwnership(dir, 0700, currentUser, verbose, fw); err != nil {
+                return fmt.Errorf("processMapFile: directory %s permission/ownership verification failed: %w", dir, err)
+            }
+        }
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("processMapFile: error reading map file: %w", err)
-	}
-	return nil
+        fmt.Printf("Successfully wrote secret to %s\n", filePath)
+    }
+
+    if err := scanner.Err(); err != nil {
+        return fmt.Errorf("processMapFile: error reading map file: %w", err)
+    }
+    return nil
 }
 
 // verifyPermissionsAndOwnership checks if the file or directory has the expected permissions and ownership.
@@ -435,19 +437,6 @@ func verifyOwnership(path string, expectedUID, expectedGID int, verbose bool) er
 	return nil
 }
 
-// initializeClient initializes the 1Password client.
-func initializeClient(ctx context.Context, apiKey string) (OPClient, error) {
-	client, err := onepassword.NewClient(
-		ctx,
-		onepassword.WithServiceAccountToken(strings.TrimSpace(apiKey)),
-		onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("initializeClient: failed to create client: %w", err)
-	}
-	return &onePasswordClientAdapter{client: client}, nil
-}
-
 // readAPIKey reads the API key from the specified path.
 func readAPIKey(verbose bool, apiKeyPath string) (string, error) {
 	logVerbose(verbose, "Reading API key from: %s", apiKeyPath)
@@ -458,18 +447,73 @@ func readAPIKey(verbose bool, apiKeyPath string) (string, error) {
 	return string(apiKey), nil
 }
 
-// setupContext creates a context with a timeout.
+// setupContext creates a context with a timeout and cancellation.
 func setupContext(timeout time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), timeout)
+    return context.WithTimeout(context.Background(), timeout)
 }
 
-// main is the entry point of the program.
-func main() {
-	verbose := flag.Bool("v", false, "Enable verbose logging")
-	flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
-	flag.Parse()
+// initializeClient initializes the 1Password client with enhanced context handling.
+func initializeClient(ctx context.Context, apiKey string) (OPClient, error) {
+    client, err := onepassword.NewClient(
+        ctx,
+        onepassword.WithServiceAccountToken(strings.TrimSpace(apiKey)),
+        onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
+    )
+    if err != nil {
+        return nil, fmt.Errorf("initializeClient: failed to create client: %w", err)
+    }
+    return &onePasswordClientAdapter{client: client}, nil
+}
 
-	logVerbose(*verbose, "Starting program with verbose logging enabled")
+// getTimeoutForOperation returns a timeout duration based on the operation type.
+func getTimeoutForOperation(operation string) time.Duration {
+    switch operation {
+    case "resolveSecret":
+        return 15 * time.Second
+    case "writeFile":
+        return 10 * time.Second
+    case "createDirectory":
+        return 5 * time.Second
+    default:
+        return 10 * time.Second
+    }
+}
+
+// resolveSecretWithTimeout resolves a secret with a specific timeout.
+func resolveSecretWithTimeout(ctx context.Context, client OPClient, secretRef string) (string, error) {
+    timeout := getTimeoutForOperation("resolveSecret")
+    ctx, cancel := context.WithTimeout(ctx, timeout)
+    defer cancel()
+
+    return client.Secrets().Resolve(ctx, secretRef)
+}
+
+// handleSignals sets up signal handling for graceful shutdown.
+func handleSignals(cancel context.CancelFunc) {
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+    go func() {
+        sig := <-sigChan
+        log.Printf("Received signal: %v", sig) // Use log.Printf instead of fmt.Printf
+        cancel()
+    }()
+}
+
+// main is the entry point of the program with graceful shutdown.
+func main() {
+    verbose := flag.Bool("v", false, "Enable verbose logging")
+    flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
+    flag.Parse()
+
+    logVerbose(*verbose, "Starting program with verbose logging enabled")
+
+    // Set up context with timeout
+    ctx, cancel := setupContext(opTimeout)
+    defer cancel()
+
+    // Handle signals for graceful shutdown
+    handleSignals(cancel)
 
 	// Determine SUID user.
 	suidUser, err := getSUIDUser(*verbose)
@@ -513,7 +557,7 @@ func main() {
 	}
 
 	// Initialize 1Password client.
-	ctx, cancel := setupContext(opTimeout)
+	ctx, cancel = setupContext(opTimeout)
 	defer cancel()
 
 	client, err := initializeClient(ctx, apiKey)
