@@ -500,9 +500,63 @@ func handleSignals(cancel context.CancelFunc) {
     }()
 }
 
+// cleanupSecretFiles removes files that would have been created by the 1Password Secret Manager.
+// It reads the map file to identify files created for the current user and safely removes them.
+// Only files are removed; directories are left intact.
+// Returns an error if any file cannot be removed.
+func cleanupSecretFiles(mapFilePath string, currentUser *user.User, verbose bool) error {
+    logVerbose(verbose, "Processing map file for cleanup: %s", mapFilePath)
+    mapFile, err := os.Open(mapFilePath)
+    if err != nil {
+        return fmt.Errorf("cleanupSecretFiles: failed to open map file: %w", err)
+    }
+    defer mapFile.Close()
+
+    scanner := bufio.NewScanner(mapFile)
+    lineNumber := 0
+
+    for scanner.Scan() {
+        lineNumber++
+        line := scanner.Text()
+        parts := strings.Split(line, "\t")
+        if len(parts) != 3 {
+            return fmt.Errorf("cleanupSecretFiles: invalid map file entry at line %d: %s", lineNumber, line)
+        }
+        username := parts[0]
+        filePath := parts[2]
+
+        // Process only entries for the current user.
+        if username != currentUser.Username {
+            logVerbose(verbose, "Skipping line %d: file %s belongs to user %s, not current user %s", lineNumber, filePath, username, currentUser.Username)
+            continue
+        }
+
+        logVerbose(verbose, "Processing cleanup for file: %s", filePath)
+
+        // Check if the file exists.
+        if _, err := os.Stat(filePath); os.IsNotExist(err) {
+            logVerbose(verbose, "File does not exist, skipping: %s", filePath)
+            continue
+        }
+
+        // Remove the file.
+        if err := os.Remove(filePath); err != nil {
+            return fmt.Errorf("cleanupSecretFiles: failed to remove file %s: %w", filePath, err)
+        }
+
+        logVerbose(verbose, "Successfully removed file: %s", filePath)
+    }
+
+    if err := scanner.Err(); err != nil {
+        return fmt.Errorf("cleanupSecretFiles: error reading map file: %w", err)
+    }
+    return nil
+}
+
 // main is the entry point of the program with graceful shutdown.
 func main() {
     verbose := flag.Bool("v", false, "Enable verbose logging")
+    cleanup := flag.Bool("cleanup", false, "Remove files created by the 1Password Secret Manager")
     flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
     flag.Parse()
 
@@ -515,61 +569,69 @@ func main() {
     // Handle signals for graceful shutdown
     handleSignals(cancel)
 
-	// Determine SUID user.
-	suidUser, err := getSUIDUser(*verbose)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+    // Determine SUID user.
+    suidUser, err := getSUIDUser(*verbose)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
 
-	// Get current user.
-	currentUser, err := user.Current()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
+    // Get current user.
+    currentUser, err := user.Current()
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
+    logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
 
-	// Elevate to SUID user.
-	if err := elevateSUID(*verbose, suidUser); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+    // Elevate to SUID user.
+    if err := elevateSUID(*verbose, suidUser); err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
 
-	// Read configuration.
-	apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+    // Read configuration.
+    apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
 
-	// Read API key.
-	apiKey, err := readAPIKey(*verbose, apiKeyPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+    // Read API key.
+    apiKey, err := readAPIKey(*verbose, apiKeyPath)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
 
-	// Drop SUID privileges.
-	if err := dropSUID(*verbose, currentUser.Username); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+    // Drop SUID privileges.
+    if err := dropSUID(*verbose, currentUser.Username); err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
 
-	// Initialize 1Password client.
-	ctx, cancel = setupContext(opTimeout)
-	defer cancel()
+    // Initialize 1Password client.
+    ctx, cancel = setupContext(opTimeout)
+    defer cancel()
 
-	client, err := initializeClient(ctx, apiKey)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	logVerbose(*verbose, "1Password client initialized successfully")
+    client, err := initializeClient(ctx, apiKey)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
+    logVerbose(*verbose, "1Password client initialized successfully")
 
-	// Process the map file.
-	if err := processMapFile(ctx, client, mapFilePath, currentUser, *verbose, osFileWriter{}); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+    // Process the map file or cleanup files.
+    if *cleanup {
+        if err := cleanupSecretFiles(mapFilePath, currentUser, *verbose); err != nil {
+            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+            os.Exit(1)
+        }
+        fmt.Println("Cleanup completed successfully")
+    } else {
+        if err := processMapFile(ctx, client, mapFilePath, currentUser, *verbose, osFileWriter{}); err != nil {
+            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+            os.Exit(1)
+        }
+    }
 }

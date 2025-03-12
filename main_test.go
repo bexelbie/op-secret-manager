@@ -206,6 +206,114 @@ func TestSUIDFunctions(t *testing.T) {
 	}
 }
 
+func TestCleanupSecretFiles(t *testing.T) {
+    currentUser, err := user.Current()
+    if err != nil {
+        t.Fatalf("Failed to get current user: %v", err)
+    }
+
+    // Create a temporary map file
+    mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	/tmp/testfile1
+%s	op://vault/item/field2	/tmp/testfile2
+otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentUser.Username)
+
+    tmpMapFile, err := os.CreateTemp("", "testmap")
+    if err != nil {
+        t.Fatal(err)
+    }
+    defer os.Remove(tmpMapFile.Name())
+    _, err = tmpMapFile.WriteString(mapFileContent)
+    if err != nil {
+        t.Fatal(err)
+    }
+    tmpMapFile.Close()
+
+    // Create test files
+    testFiles := []string{"/tmp/testfile1", "/tmp/testfile2", "/tmp/testfile3"}
+    for _, file := range testFiles {
+        if err := os.WriteFile(file, []byte("test"), 0600); err != nil {
+            t.Fatal(err)
+        }
+        defer os.Remove(file)
+    }
+
+    // Run cleanup
+    if err := cleanupSecretFiles(tmpMapFile.Name(), currentUser, false); err != nil {
+        t.Fatalf("cleanupSecretFiles failed: %v", err)
+    }
+
+    // Verify files for the current user were removed
+    for _, file := range []string{"/tmp/testfile1", "/tmp/testfile2"} {
+        if _, err := os.Stat(file); !os.IsNotExist(err) {
+            t.Errorf("File %s was not removed", file)
+        }
+    }
+
+    // Verify non-current user file was not removed
+    if _, err := os.Stat("/tmp/testfile3"); os.IsNotExist(err) {
+        t.Errorf("File /tmp/testfile3 should not have been removed")
+    }
+}
+
+func TestCleanupSecretFiles_NonExistentFiles(t *testing.T) {
+    currentUser, err := user.Current()
+    if err != nil {
+        t.Fatalf("Failed to get current user: %v", err)
+    }
+
+    // Create a temporary map file
+    mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	/tmp/nonexistentfile`, currentUser.Username)
+
+    tmpMapFile, err := os.CreateTemp("", "testmap")
+    if err != nil {
+        t.Fatal(err)
+    }
+    defer os.Remove(tmpMapFile.Name())
+    _, err = tmpMapFile.WriteString(mapFileContent)
+    if err != nil {
+        t.Fatal(err)
+    }
+    tmpMapFile.Close()
+
+    // Run cleanup
+    if err := cleanupSecretFiles(tmpMapFile.Name(), currentUser, false); err != nil {
+        t.Fatalf("cleanupSecretFiles failed: %v", err)
+    }
+}
+
+func TestCleanupSecretFiles_PermissionError(t *testing.T) {
+    if os.Getuid() == 0 {
+        t.Skip("Skipping permission error test when running as root")
+    }
+
+    currentUser, err := user.Current()
+    if err != nil {
+        t.Fatalf("Failed to get current user: %v", err)
+    }
+
+    // Create a temporary map file
+    mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	/root/testfile`, currentUser.Username)
+
+    tmpMapFile, err := os.CreateTemp("", "testmap")
+    if err != nil {
+        t.Fatal(err)
+    }
+    defer os.Remove(tmpMapFile.Name())
+    _, err = tmpMapFile.WriteString(mapFileContent)
+    if err != nil {
+        t.Fatal(err)
+    }
+    tmpMapFile.Close()
+
+    // Run cleanup
+    err = cleanupSecretFiles(tmpMapFile.Name(), currentUser, false)
+    if err == nil {
+        t.Fatalf("Expected permission error, but got nil")
+    } else {
+        t.Logf("Received expected error: %v", err)
+    }
+}
+
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
 	if err != nil {
