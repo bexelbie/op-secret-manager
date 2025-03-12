@@ -152,7 +152,7 @@ MAP_FILE_PATH = /tmp/mapfile.txt
 	}
 	tmpConfigFile.Close()
 
-	apiKeyPath, mapFilePath, err := readConfig(tmpConfigFile.Name())
+	apiKeyPath, mapFilePath, err := readConfig(false, tmpConfigFile.Name())
 	if err != nil {
 		t.Fatalf("readConfig failed: %v", err)
 	}
@@ -168,7 +168,7 @@ MAP_FILE_PATH = /tmp/mapfile.txt
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = readConfig(tmpConfigFile.Name())
+	_, _, err = readConfig(false, tmpConfigFile.Name())
 	if err == nil {
 		t.Errorf("Expected error for missing API_KEY_PATH, but got nil")
 	}
@@ -178,7 +178,7 @@ MAP_FILE_PATH = /tmp/mapfile.txt
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = readConfig(tmpConfigFile.Name())
+	_, _, err = readConfig(false, tmpConfigFile.Name())
 	if err == nil {
 		t.Errorf("Expected error for invalid config line, but got nil")
 	}
@@ -189,7 +189,7 @@ func TestSUIDFunctions(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("Skipping SUID tests because not running as root")
 	}
-	suidUser, err := getSUIDUser()
+	suidUser, err := getSUIDUser(false)
 	if err != nil {
 		t.Fatalf("getSUIDUser failed: %v", err)
 	}
@@ -197,11 +197,11 @@ func TestSUIDFunctions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get current user: %v", err)
 	}
-	err = dropSUID(currentUser.Username)
+	err = dropSUID(false, currentUser.Username)
 	if err != nil {
 		t.Errorf("dropSUID failed: %v", err)
 	}
-	err = elevateSUID(suidUser)
+	err = elevateSUID(false, suidUser)
 	if err != nil {
 		t.Errorf("elevateSUID failed: %v", err)
 	}
@@ -209,7 +209,6 @@ func TestSUIDFunctions(t *testing.T) {
 
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
-
 	currentUser, err := user.Current()
 	if err != nil {
 		t.Fatalf("Failed to get current user: %v", err)
@@ -255,10 +254,7 @@ otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentU
 		FilesChowned: make(map[string][]int),
 	}
 
-	// Set the global FileWriter to our mock.
-	FileWriter = mockFileWriter
-
-	err = processMapFile(context.TODO(), mockClient, tmpMapFile.Name(), currentUser)
+	err = processMapFile(context.TODO(), mockClient, tmpMapFile.Name(), currentUser, false, mockFileWriter)
 	if err != nil {
 		t.Fatalf("processMapFile failed: %v", err)
 	}
@@ -273,15 +269,15 @@ otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentU
 		t.Errorf("File /tmp/testfile3 should not have been written")
 	}
 
-    // Assert that the expected directories were created (unique directories)
-    expectedDirs := map[string]bool{"/tmp": true}
-    uniqueDirs := make(map[string]bool)
-    for _, d := range mockFileWriter.DirsCreated {
-	    uniqueDirs[d] = true
-    }
-    if len(uniqueDirs) != len(expectedDirs) {
-	    t.Errorf("Unique DirsCreated length mismatch: expected %d, got %d", len(expectedDirs), len(uniqueDirs))
-    }
+	// Assert that the expected directories were created (unique directories)
+	expectedDirs := map[string]bool{"/tmp": true}
+	uniqueDirs := make(map[string]bool)
+	for _, d := range mockFileWriter.DirsCreated {
+		uniqueDirs[d] = true
+	}
+	if len(uniqueDirs) != len(expectedDirs) {
+		t.Errorf("Unique DirsCreated length mismatch: expected %d, got %d", len(expectedDirs), len(uniqueDirs))
+	}
 
 	uid, _ := strconv.Atoi(currentUser.Uid)
 	gid, _ := strconv.Atoi(currentUser.Gid)
@@ -301,8 +297,4 @@ otheruser	op://vault/item/field3	/tmp/testfile3`, currentUser.Username, currentU
 			t.Errorf("File %s chown mismatch: expected UID %d GID %d, got UID %d GID %d", file, expectedUidGid[0], expectedUidGid[1], actualUidGid[0], actualUidGid[1])
 		}
 	}
-
-	// Reset the global FileWriter.
-	FileWriter = osFileWriter{}
 }
-

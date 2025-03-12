@@ -21,8 +21,6 @@ const (
 	opTimeout      = 10 * time.Second
 )
 
-var verbose bool
-
 // fileWriter defines the interface for writing files.
 type fileWriter interface {
 	WriteFile(filename string, data []byte, perm os.FileMode) error
@@ -45,11 +43,8 @@ func (osFileWriter) Chown(name string, uid, gid int) error {
 	return os.Chown(name, uid, gid)
 }
 
-// FileWriter is the global file writer.
-var FileWriter fileWriter = osFileWriter{}
-
 // logVerbose prints verbose log messages.
-func logVerbose(format string, args ...interface{}) {
+func logVerbose(verbose bool, format string, args ...interface{}) {
 	if verbose {
 		redactedArgs := make([]interface{}, len(args))
 		for i, arg := range args {
@@ -107,8 +102,8 @@ func (o *onepasswordSecretsAdapter) Resolve(ctx context.Context, secretRef strin
 }
 
 // readConfig reads the configuration file.
-func readConfig(configFilePath string) (string, string, error) {
-	logVerbose("Reading configuration file: %s", configFilePath)
+func readConfig(verbose bool, configFilePath string) (string, string, error) {
+	logVerbose(verbose, "Reading configuration file: %s", configFilePath)
 	file, err := os.Open(configFilePath)
 	if err != nil {
 		return "", "", fmt.Errorf("readConfig: failed to open config file: %w", err)
@@ -129,7 +124,7 @@ func readConfig(configFilePath string) (string, string, error) {
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
 		config[key] = value
-		logVerbose("Config entry: %s = %s", key, value)
+		logVerbose(verbose, "Config entry: %s = %s", key, value)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -145,26 +140,26 @@ func readConfig(configFilePath string) (string, string, error) {
 		return "", "", fmt.Errorf("readConfig: MAP_FILE_PATH not found in config file")
 	}
 
-	logVerbose("API key path: %s", apiKeyPath)
-	logVerbose("Map file path: %s", mapFilePath)
+	logVerbose(verbose, "API key path: %s", apiKeyPath)
+	logVerbose(verbose, "Map file path: %s", mapFilePath)
 	return apiKeyPath, mapFilePath, nil
 }
 
 // getSUIDUser returns the SUID user's username.
-func getSUIDUser() (string, error) {
+func getSUIDUser(verbose bool) (string, error) {
 	euid := syscall.Geteuid()
-	logVerbose("Effective UID (EUID): %d", euid)
+	logVerbose(verbose, "Effective UID (EUID): %d", euid)
 	u, err := user.LookupId(strconv.Itoa(euid))
 	if err != nil {
 		return "", fmt.Errorf("getSUIDUser: failed to lookup SUID user: %w", err)
 	}
-	logVerbose("SUID user: %s", u.Username)
+	logVerbose(verbose, "SUID user: %s", u.Username)
 	return u.Username, nil
 }
 
 // dropSUID drops SUID privileges by switching to the current user.
-func dropSUID(username string) error {
-	logVerbose("Dropping SUID privileges, switching to user: %s", username)
+func dropSUID(verbose bool, username string) error {
+	logVerbose(verbose, "Dropping SUID privileges, switching to user: %s", username)
 	u, err := user.Lookup(username)
 	if err != nil {
 		return fmt.Errorf("dropSUID: failed to lookup user %s: %w", username, err)
@@ -183,13 +178,13 @@ func dropSUID(username string) error {
 	if err := syscall.Setuid(uid); err != nil {
 		return fmt.Errorf("dropSUID: failed to set UID: %w", err)
 	}
-	logVerbose("Successfully switched to user: %s", username)
+	logVerbose(verbose, "Successfully switched to user: %s", username)
 	return nil
 }
 
 // elevateSUID elevates to the SUID user.
-func elevateSUID(username string) error {
-	logVerbose("Elevating to SUID privileges, switching to user: %s", username)
+func elevateSUID(verbose bool, username string) error {
+	logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
 	u, err := user.Lookup(username)
 	if err != nil {
 		return fmt.Errorf("elevateSUID: failed to lookup user %s: %w", username, err)
@@ -208,13 +203,13 @@ func elevateSUID(username string) error {
 	if err := syscall.Setuid(uid); err != nil {
 		return fmt.Errorf("elevateSUID: failed to set UID: %w", err)
 	}
-	logVerbose("Successfully switched to user: %s", username)
+	logVerbose(verbose, "Successfully switched to user: %s", username)
 	return nil
 }
 
 // processMapFile processes the map file and writes secrets.
-func processMapFile(ctx context.Context, client OPClient, mapFilePath string, currentUser *user.User) error {
-	logVerbose("Processing map file: %s", mapFilePath)
+func processMapFile(ctx context.Context, client OPClient, mapFilePath string, currentUser *user.User, verbose bool, fw fileWriter) error {
+	logVerbose(verbose, "Processing map file: %s", mapFilePath)
 	mapFile, err := os.Open(mapFilePath)
 	if err != nil {
 		return fmt.Errorf("processMapFile: failed to open map file: %w", err)
@@ -237,38 +232,38 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 		// Process only entries for the current user.
 		if username != currentUser.Username {
 			if verbose {
-				logVerbose("Skipping line %d: not for current user", lineNumber)
+				logVerbose(verbose, "Skipping line %d: not for current user", lineNumber)
 			}
 			continue
 		}
 
-		logVerbose("Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
-		logVerbose("Resolving secret: %s", secretRef)
+		logVerbose(verbose, "Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
+		logVerbose(verbose, "Resolving secret: %s", secretRef)
 		secret, err := client.Secrets().Resolve(ctx, secretRef)
 		if err != nil {
 			return fmt.Errorf("processMapFile: failed to resolve secret %s: %w", secretRef, err)
 		}
-		logVerbose("Secret resolved successfully: %s", secretRef)
+		logVerbose(verbose, "Secret resolved successfully: %s", secretRef)
 
 		dir := filepath.Dir(filePath)
-		logVerbose("Creating directory: %s", dir)
-		if err := FileWriter.MkdirAll(dir, 0700); err != nil {
+		logVerbose(verbose, "Creating directory: %s", dir)
+		if err := fw.MkdirAll(dir, 0700); err != nil {
 			return fmt.Errorf("processMapFile: failed to create directory %s: %w", dir, err)
 		}
 
-		logVerbose("Writing secret to file: %s", filePath)
-		if err := FileWriter.WriteFile(filePath, []byte(secret), 0600); err != nil {
+		logVerbose(verbose, "Writing secret to file: %s", filePath)
+		if err := fw.WriteFile(filePath, []byte(secret), 0600); err != nil {
 			return fmt.Errorf("processMapFile: failed to write secret to %s: %w", filePath, err)
 		}
 
 		uid, _ := strconv.Atoi(currentUser.Uid)
 		gid, _ := strconv.Atoi(currentUser.Gid)
-		logVerbose("Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
-		if err := FileWriter.Chown(filePath, uid, gid); err != nil {
+		logVerbose(verbose, "Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
+		if err := fw.Chown(filePath, uid, gid); err != nil {
 			return fmt.Errorf("processMapFile: failed to change ownership of file %s: %w", filePath, err)
 		}
-		logVerbose("Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
-		if err := FileWriter.Chown(dir, uid, gid); err != nil {
+		logVerbose(verbose, "Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
+		if err := fw.Chown(dir, uid, gid); err != nil {
 			return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
 		}
 
@@ -282,14 +277,14 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 }
 
 func main() {
-	flag.BoolVar(&verbose, "v", false, "Enable verbose logging")
-	flag.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
+	verbose := flag.Bool("v", false, "Enable verbose logging")
+	flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
 	flag.Parse()
 
-	logVerbose("Starting program with verbose logging enabled")
+	logVerbose(*verbose, "Starting program with verbose logging enabled")
 
 	// Determine SUID user.
-	suidUser, err := getSUIDUser()
+	suidUser, err := getSUIDUser(*verbose)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -301,22 +296,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	logVerbose("Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
+	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
 
 	// Elevate to SUID user.
-	if err := elevateSUID(suidUser); err != nil {
+	if err := elevateSUID(*verbose, suidUser); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Read configuration.
-	apiKeyPath, mapFilePath, err := readConfig(configFilePath)
+	apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	logVerbose("Reading API key from: %s", apiKeyPath)
+	logVerbose(*verbose, "Reading API key from: %s", apiKeyPath)
 	apiKey, err := os.ReadFile(apiKeyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -324,13 +319,13 @@ func main() {
 	}
 
 	// Drop SUID privileges.
-	if err := dropSUID(currentUser.Username); err != nil {
+	if err := dropSUID(*verbose, currentUser.Username); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Initialize 1Password client.
-	logVerbose("Initializing 1Password client")
+	logVerbose(*verbose, "Initializing 1Password client")
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
@@ -343,11 +338,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	logVerbose("1Password client initialized successfully")
+	logVerbose(*verbose, "1Password client initialized successfully")
 
 	// Wrap the client in an adapter and process the map file.
 	adapter := &onePasswordClientAdapter{client: client}
-	if err := processMapFile(ctx, adapter, mapFilePath, currentUser); err != nil {
+	if err := processMapFile(ctx, adapter, mapFilePath, currentUser, *verbose, osFileWriter{}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
