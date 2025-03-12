@@ -83,30 +83,60 @@ func getSUIDUser() (string, error) {
 	return u.Username, nil
 }
 
-// switchUser switches to the specified user.
-func switchUser(username string) error {
-	logVerbose("Switching to user: %s", username)
+// dropSUID drops SUID privileges by switching to the current user.
+func dropSUID(username string) error {
+	logVerbose("Dropping SUID privileges, switching to user: %s", username)
 	u, err := user.Lookup(username)
 	if err != nil {
-		return fmt.Errorf("switchUser: failed to lookup user %s: %w", username, err)
+		return fmt.Errorf("dropSUID: failed to lookup user %s: %w", username, err)
 	}
 
 	uid, err := strconv.Atoi(u.Uid)
 	if err != nil {
-		return fmt.Errorf("switchUser: invalid UID for user %s: %w", username, err)
+		return fmt.Errorf("dropSUID: invalid UID for user %s: %w", username, err)
 	}
 
 	gid, err := strconv.Atoi(u.Gid)
 	if err != nil {
-		return fmt.Errorf("switchUser: invalid GID for user %s: %w", username, err)
+		return fmt.Errorf("dropSUID: invalid GID for user %s: %w", username, err)
 	}
 
 	if err := syscall.Setgid(gid); err != nil {
-		return fmt.Errorf("switchUser: failed to set GID: %w", err)
+		return fmt.Errorf("dropSUID: failed to set GID: %w", err)
 	}
 
 	if err := syscall.Setuid(uid); err != nil {
-		return fmt.Errorf("switchUser: failed to set UID: %w", err)
+		return fmt.Errorf("dropSUID: failed to set UID: %w", err)
+	}
+
+	logVerbose("Successfully switched to user: %s", username)
+	return nil
+}
+
+// elevateSUID elevates to the SUID user
+func elevateSUID(username string) error {
+	logVerbose("Elevating to SUID privileges, switching to user: %s", username)
+	u, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("elevateSUID: failed to lookup user %s: %w", username, err)
+	}
+
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return fmt.Errorf("elevateSUID: invalid UID for user %s: %w", username, err)
+	}
+
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
+	}
+
+	if err := syscall.Setgid(gid); err != nil {
+		return fmt.Errorf("elevateSUID: failed to set GID: %w", err)
+	}
+
+	if err := syscall.Setuid(uid); err != nil {
+		return fmt.Errorf("elevateSUID: failed to set UID: %w", err)
 	}
 
 	logVerbose("Successfully switched to user: %s", username)
@@ -128,20 +158,28 @@ func main() {
 		return
 	}
 
-	// Step 2: Switch to the SUID user
-	if err := switchUser(suidUser); err != nil {
+	// Step 2: Get the current (executing) user
+	currentUser, err := user.Current()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get current user: %v\n", err)
+		return
+	}
+	logVerbose("Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
+
+	// Step 3: Elevate to the SUID user
+	if err := elevateSUID(suidUser); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to switch to SUID user: %v\n", err)
 		return
 	}
 
-	// Step 3: Read the configuration file
+	// Step 4: Read the configuration file
 	apiKeyPath, mapFilePath, err := readConfig(configFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read config file: %v\n", err)
 		return
 	}
 
-	// Step 4: Read the API key
+	// Step 5: Read the API key
 	logVerbose("Reading API key from: %s", apiKeyPath)
 	apiKey, err := os.ReadFile(apiKeyPath)
 	if err != nil {
@@ -149,7 +187,13 @@ func main() {
 		return
 	}
 
-	// Step 5: Initialize the 1Password client with a timeout
+	// Step 6: Drop SUID privileges
+	if err := dropSUID(currentUser.Username); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to drop SUID privileges: %v\n", err)
+		return
+	}
+
+	// Step 7: Initialize the 1Password client with a timeout
 	logVerbose("Initializing 1Password client")
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout) // 10-second timeout
 	defer cancel()
@@ -165,7 +209,7 @@ func main() {
 	}
 	logVerbose("1Password client initialized successfully")
 
-	// Step 6: Read the map file
+	// Step 8: Read the map file
 	logVerbose("Reading map file: %s", mapFilePath)
 	mapFile, err := os.Open(mapFilePath)
 	if err != nil {
@@ -173,20 +217,6 @@ func main() {
 		return
 	}
 	defer mapFile.Close()
-
-	// Step 7: Get the current (executing) user
-	currentUser, err := user.Current()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get current user: %v\n", err)
-		return
-	}
-	logVerbose("Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
-
-	// Step 8: Switch back to the executing user
-	if err := switchUser(currentUser.Username); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to switch back to executing user: %v\n", err)
-		return
-	}
 
 	// Step 9: Process the map file
 	scanner := bufio.NewScanner(mapFile)
