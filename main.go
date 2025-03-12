@@ -157,54 +157,122 @@ func getSUIDUser(verbose bool) (string, error) {
 	return u.Username, nil
 }
 
-// dropSUID drops SUID privileges by switching to the current user.
-func dropSUID(verbose bool, username string) error {
-	logVerbose(verbose, "Dropping SUID privileges, switching to user: %s", username)
-	u, err := user.Lookup(username)
-	if err != nil {
-		return fmt.Errorf("dropSUID: failed to lookup user %s: %w", username, err)
-	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return fmt.Errorf("dropSUID: invalid UID for user %s: %w", username, err)
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return fmt.Errorf("dropSUID: invalid GID for user %s: %w", username, err)
-	}
-	if err := syscall.Setgid(gid); err != nil {
-		return fmt.Errorf("dropSUID: failed to set GID: %w", err)
-	}
-	if err := syscall.Setuid(uid); err != nil {
-		return fmt.Errorf("dropSUID: failed to set UID: %w", err)
-	}
-	logVerbose(verbose, "Successfully switched to user: %s", username)
-	return nil
-}
-
 // elevateSUID elevates to the SUID user.
 func elevateSUID(verbose bool, username string) error {
-	logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
-	u, err := user.Lookup(username)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: failed to lookup user %s: %w", username, err)
-	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: invalid UID for user %s: %w", username, err)
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
-	}
-	if err := syscall.Setgid(gid); err != nil {
-		return fmt.Errorf("elevateSUID: failed to set GID: %w", err)
-	}
-	if err := syscall.Setuid(uid); err != nil {
-		return fmt.Errorf("elevateSUID: failed to set UID: %w", err)
-	}
-	logVerbose(verbose, "Successfully switched to user: %s", username)
-	return nil
+    logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
+    u, err := user.Lookup(username)
+    if err != nil {
+        return fmt.Errorf("elevateSUID: failed to lookup user %s: %w", username, err)
+    }
+    uid, err := strconv.Atoi(u.Uid)
+    if err != nil {
+        return fmt.Errorf("elevateSUID: invalid UID for user %s: %w", username, err)
+    }
+    gid, err := strconv.Atoi(u.Gid)
+    if err != nil {
+        return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
+    }
+
+    // Get supplementary groups
+    gids, err := u.GroupIds()
+    if err != nil {
+        return fmt.Errorf("elevateSUID: failed to get supplementary groups for user %s: %w", username, err)
+    }
+    gidList := make([]int, len(gids))
+    for i, g := range gids {
+        gidInt, err := strconv.Atoi(g)
+        if err != nil {
+            return fmt.Errorf("elevateSUID: invalid GID in supplementary groups for user %s: %w", username, err)
+        }
+        gidList[i] = gidInt
+    }
+
+    // Set supplementary groups
+    if err := syscall.Setgroups(gidList); err != nil {
+        return fmt.Errorf("elevateSUID: failed to set supplementary groups: %w", err)
+    }
+
+    // Set GID
+    if err := syscall.Setgid(gid); err != nil {
+        return fmt.Errorf("elevateSUID: failed to set GID: %w", err)
+    }
+
+    // Verify GID change
+    if syscall.Getgid() != gid || syscall.Getegid() != gid {
+        return fmt.Errorf("elevateSUID: GID change verification failed")
+    }
+
+    // Set UID
+    if err := syscall.Setuid(uid); err != nil {
+        return fmt.Errorf("elevateSUID: failed to set UID: %w", err)
+    }
+
+    // Verify UID change
+    if syscall.Getuid() != uid || syscall.Geteuid() != uid {
+        return fmt.Errorf("elevateSUID: UID change verification failed")
+    }
+
+    logVerbose(verbose, "Successfully switched to user: %s", username)
+    return nil
+}
+
+// dropSUID drops SUID privileges by switching to the current user.
+func dropSUID(verbose bool, username string) error {
+    logVerbose(verbose, "Dropping SUID privileges, switching to user: %s", username)
+    u, err := user.Lookup(username)
+    if err != nil {
+        return fmt.Errorf("dropSUID: failed to lookup user %s: %w", username, err)
+    }
+    uid, err := strconv.Atoi(u.Uid)
+    if err != nil {
+        return fmt.Errorf("dropSUID: invalid UID for user %s: %w", username, err)
+    }
+    gid, err := strconv.Atoi(u.Gid)
+    if err != nil {
+        return fmt.Errorf("dropSUID: invalid GID for user %s: %w", username, err)
+    }
+
+    // Get supplementary groups
+    gids, err := u.GroupIds()
+    if err != nil {
+        return fmt.Errorf("dropSUID: failed to get supplementary groups for user %s: %w", username, err)
+    }
+    gidList := make([]int, len(gids))
+    for i, g := range gids {
+        gidInt, err := strconv.Atoi(g)
+        if err != nil {
+            return fmt.Errorf("dropSUID: invalid GID in supplementary groups for user %s: %w", username, err)
+        }
+        gidList[i] = gidInt
+    }
+
+    // Set supplementary groups
+    if err := syscall.Setgroups(gidList); err != nil {
+        return fmt.Errorf("dropSUID: failed to set supplementary groups: %w", err)
+    }
+
+    // Set GID
+    if err := syscall.Setgid(gid); err != nil {
+        return fmt.Errorf("dropSUID: failed to set GID: %w", err)
+    }
+
+    // Verify GID change
+    if syscall.Getgid() != gid || syscall.Getegid() != gid {
+        return fmt.Errorf("dropSUID: GID change verification failed")
+    }
+
+    // Set UID
+    if err := syscall.Setuid(uid); err != nil {
+        return fmt.Errorf("dropSUID: failed to set UID: %w", err)
+    }
+
+    // Verify UID change
+    if syscall.Getuid() != uid || syscall.Geteuid() != uid {
+        return fmt.Errorf("dropSUID: UID change verification failed")
+    }
+
+    logVerbose(verbose, "Successfully switched to user: %s", username)
+    return nil
 }
 
 // processMapFile processes the map file and writes secrets.
