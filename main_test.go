@@ -504,6 +504,60 @@ func TestResolveSecretWithTimeout(t *testing.T) {
 	}
 }
 
+// TestHandleSignals tests the handleSignals function.
+func TestHandleSignals(t *testing.T) {
+	t.Run("SIGINT cancels context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		handleSignals(cancel)
+
+		// Simulate SIGINT
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+
+		// Give the signal handler time to process
+		time.Sleep(100 * time.Millisecond)
+
+		select {
+		case <-ctx.Done():
+			// Expected case
+		default:
+			t.Error("Context should be canceled after SIGINT")
+		}
+	})
+
+	t.Run("SIGTERM cancels context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		handleSignals(cancel)
+
+		// Simulate SIGTERM
+		syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+
+		// Give the signal handler time to process
+		time.Sleep(100 * time.Millisecond)
+
+		select {
+		case <-ctx.Done():
+			// Expected case
+		default:
+			t.Error("Context should be canceled after SIGTERM")
+		}
+	})
+
+	t.Run("no signal leaves context active", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		handleSignals(cancel)
+
+		// Wait briefly to ensure no cancellation
+		time.Sleep(100 * time.Millisecond)
+
+		select {
+		case <-ctx.Done():
+			t.Error("Context should not be canceled without signal")
+		default:
+			// Expected case
+		}
+	})
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
