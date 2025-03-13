@@ -572,6 +572,73 @@ func TestHandleSignals(t *testing.T) {
 	})
 }
 
+// TestCleanupSecretFiles tests the cleanupSecretFiles function.
+func TestCleanupSecretFiles(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("Failed to get current user: %v", err)
+	}
+
+	// Create a temporary directory for the test
+	tmpDir := t.TempDir()
+
+	// Create test files
+	file1 := filepath.Join(tmpDir, "file1")
+	file2 := filepath.Join(tmpDir, "file2")
+	file3 := filepath.Join(tmpDir, "file3")
+
+	// Create files that should be removed
+	if err := os.WriteFile(file1, []byte("test1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file2, []byte("test2"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a file that should be skipped (non-existent)
+	// file3 will not be created
+
+	// Create a temporary map file
+	mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	%s
+%s	op://vault/item/field2	%s
+otheruser	op://vault/item/field3	%s`, 
+		currentUser.Username, file1,
+		currentUser.Username, file2,
+		file3)
+
+	tmpMapFile, err := os.CreateTemp(tmpDir, "testmap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpMapFile.Name())
+	_, err = tmpMapFile.WriteString(mapFileContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpMapFile.Close()
+
+	// Run cleanup
+	err = cleanupSecretFiles(tmpMapFile.Name(), currentUser, false)
+	if err != nil {
+		t.Fatalf("cleanupSecretFiles failed: %v", err)
+	}
+
+	// Verify file1 was removed
+	if _, err := os.Stat(file1); !os.IsNotExist(err) {
+		t.Errorf("File %s should have been removed", file1)
+	}
+
+	// Verify file2 was removed
+	if _, err := os.Stat(file2); !os.IsNotExist(err) {
+		t.Errorf("File %s should have been removed", file2)
+	}
+
+	// Verify file3 was not created/removed (should be skipped)
+	if _, err := os.Stat(file3); !os.IsNotExist(err) {
+		t.Errorf("File %s should not exist", file3)
+	}
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
