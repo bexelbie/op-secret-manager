@@ -512,14 +512,19 @@ func resolveSecretWithTimeout(ctx context.Context, client OPClient, secretRef st
 }
 
 // handleSignals sets up signal handling for graceful shutdown.
+// handleSignals sets up signal handling for graceful shutdown.
+// It listens for SIGINT and SIGTERM signals and cancels the context when received.
+// This allows for cleanup of resources before program exit.
+// Logs are emitted when signals are received to aid in monitoring and debugging.
 func handleSignals(cancel context.CancelFunc) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		sig := <-sigChan
-		log.Printf("Received signal: %v", sig) // Use log.Printf instead of fmt.Printf
+		log.Printf("Received signal: %v, initiating graceful shutdown", sig)
 		cancel()
+		log.Printf("Shutdown initiated for signal: %v", sig)
 	}()
 }
 

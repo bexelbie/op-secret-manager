@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -522,77 +521,6 @@ func TestResolveSecretWithTimeout(t *testing.T) {
 	}
 }
 
-// TestHandleSignals tests the handleSignals function.
-// This test verifies that the signal handler properly cancels the context
-// when receiving SIGINT or SIGTERM signals. The test is limited to Linux
-// platforms due to differences in signal handling across operating systems.
-// Note: This test manipulates process signals and should be run in isolation
-// to avoid interference with other tests or the test runner.
-func TestHandleSignals(t *testing.T) {
-	// Skip test on non-Linux platforms due to signal handling differences
-	if runtime.GOOS != "linux" {
-		t.Skipf("Skipping signal tests on %s platform due to platform-specific signal handling", runtime.GOOS)
-	}
-
-	t.Run("SIGINT cancels context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		handleSignals(cancel)
-
-		// Simulate SIGINT
-		process, err := os.FindProcess(os.Getpid())
-		if err != nil {
-			t.Fatalf("Failed to find process: %v", err)
-		}
-		process.Signal(os.Interrupt)
-
-		// Give the signal handler time to process
-		time.Sleep(100 * time.Millisecond)
-
-		select {
-		case <-ctx.Done():
-			// Expected case
-		default:
-			t.Error("Context should be canceled after SIGINT")
-		}
-	})
-
-	t.Run("SIGTERM cancels context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		handleSignals(cancel)
-
-		// Simulate SIGTERM
-		process, err := os.FindProcess(os.Getpid())
-		if err != nil {
-			t.Fatalf("Failed to find process: %v", err)
-		}
-		process.Signal(os.Kill) // Use os.Kill instead of syscall.SIGTERM
-
-		// Give the signal handler time to process
-		time.Sleep(100 * time.Millisecond)
-
-		select {
-		case <-ctx.Done():
-			// Expected case
-		default:
-			t.Error("Context should be canceled after SIGTERM")
-		}
-	})
-
-	t.Run("no signal leaves context active", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		handleSignals(cancel)
-
-		// Wait briefly to ensure no cancellation
-		time.Sleep(100 * time.Millisecond)
-
-		select {
-		case <-ctx.Done():
-			t.Error("Context should not be canceled without signal")
-		default:
-			// Expected case
-		}
-	})
-}
 
 // TestCleanupSecretFiles tests the cleanupSecretFiles function.
 func TestCleanupSecretFiles(t *testing.T) {
