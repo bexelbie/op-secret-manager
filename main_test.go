@@ -300,6 +300,57 @@ func TestReadAPIKey(t *testing.T) {
 	})
 }
 
+// TestSetupContext tests the setupContext function.
+func TestSetupContext(t *testing.T) {
+	t.Run("valid timeout", func(t *testing.T) {
+		timeout := 100 * time.Millisecond
+		ctx, cancel := setupContext(timeout)
+		defer cancel()
+
+		// Verify the context has the expected deadline
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("Expected context to have a deadline")
+		}
+
+		expectedDeadline := time.Now().Add(timeout)
+		if deadline.After(expectedDeadline.Add(10*time.Millisecond)) || 
+			deadline.Before(expectedDeadline.Add(-10*time.Millisecond)) {
+			t.Errorf("Deadline not within expected range. Got: %v, Expected around: %v", 
+				deadline, expectedDeadline)
+		}
+
+		// Verify context is not done yet
+		select {
+		case <-ctx.Done():
+			t.Error("Context should not be done yet")
+		default:
+			// Expected case
+		}
+	})
+
+	t.Run("cancel before timeout", func(t *testing.T) {
+		timeout := 100 * time.Millisecond
+		ctx, cancel := setupContext(timeout)
+		
+		// Cancel immediately
+		cancel()
+
+		// Verify context is done
+		select {
+		case <-ctx.Done():
+			// Expected case
+		default:
+			t.Error("Context should be done after cancel")
+		}
+
+		// Verify the error is context.Canceled
+		if ctx.Err() != context.Canceled {
+			t.Errorf("Expected context error to be Canceled, got: %v", ctx.Err())
+		}
+	})
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
