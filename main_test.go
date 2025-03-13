@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -506,6 +507,16 @@ func TestResolveSecretWithTimeout(t *testing.T) {
 
 // TestHandleSignals tests the handleSignals function.
 func TestHandleSignals(t *testing.T) {
+	// Skip test if syscall is not available (e.g. on Windows)
+	if _, ok := os.LookupEnv("GOOS"); ok && runtime.GOOS == "windows" {
+		t.Skip("Skipping signal tests on Windows")
+	}
+
+	// Check if syscall package is available
+	if !isSyscallAvailable() {
+		t.Skip("Skipping signal tests - syscall not available")
+	}
+
 	t.Run("SIGINT cancels context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		handleSignals(cancel)
@@ -556,6 +567,20 @@ func TestHandleSignals(t *testing.T) {
 			// Expected case
 		}
 	})
+}
+
+// isSyscallAvailable checks if the syscall package is available
+func isSyscallAvailable() bool {
+	defer func() {
+		if r := recover(); r != nil {
+			// If we panic, syscall is not available
+			return
+		}
+	}()
+	
+	// Try to use syscall to see if it's available
+	_ = syscall.Getpid()
+	return true
 }
 
 // TestProcessMapFile tests the processMapFile function.
