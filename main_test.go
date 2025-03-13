@@ -156,6 +156,88 @@ func TestSecrets_FailingLiveCall(t *testing.T) {
 	}
 }
 
+// TestReadConfig tests the readConfig function.
+func TestReadConfig(t *testing.T) {
+	t.Run("valid configuration", func(t *testing.T) {
+		// Create a temporary config file
+		tmpFile, err := os.CreateTemp("", "testconfig")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `API_KEY_PATH=/path/to/api/key
+MAP_FILE_PATH=/path/to/map/file`
+		_, err = tmpFile.WriteString(configContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tmpFile.Close()
+
+		apiKeyPath, mapFilePath, err := readConfig(false, tmpFile.Name())
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+
+		if apiKeyPath != "/path/to/api/key" {
+			t.Errorf("Expected API_KEY_PATH /path/to/api/key, got %s", apiKeyPath)
+		}
+		if mapFilePath != "/path/to/map/file" {
+			t.Errorf("Expected MAP_FILE_PATH /path/to/map/file, got %s", mapFilePath)
+		}
+	})
+
+	t.Run("missing keys", func(t *testing.T) {
+		// Create a temporary config file with missing keys
+		tmpFile, err := os.CreateTemp("", "testconfig")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `SOME_OTHER_KEY=value`
+		_, err = tmpFile.WriteString(configContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tmpFile.Close()
+
+		_, _, err = readConfig(false, tmpFile.Name())
+		if err == nil {
+			t.Fatal("Expected error for missing keys, got nil")
+		}
+	})
+
+	t.Run("invalid formatting", func(t *testing.T) {
+		// Create a temporary config file with invalid formatting
+		tmpFile, err := os.CreateTemp("", "testconfig")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `API_KEY_PATH /path/to/api/key
+MAP_FILE_PATH=/path/to/map/file`
+		_, err = tmpFile.WriteString(configContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tmpFile.Close()
+
+		_, _, err = readConfig(false, tmpFile.Name())
+		if err == nil {
+			t.Fatal("Expected error for invalid formatting, got nil")
+		}
+	})
+
+	t.Run("non-existent file", func(t *testing.T) {
+		_, _, err := readConfig(false, "/non/existent/file")
+		if err == nil {
+			t.Fatal("Expected error for non-existent file, got nil")
+		}
+	})
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
