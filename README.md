@@ -188,7 +188,7 @@ To build the program from source, follow these steps:
 
 The repository uses the following branching strategy:
 
-- `develop`: The main working branch where all development happens. This is the default branch for pull requests and feature development. Pushes to this branch automatically trigger beta builds.
+- `develop`: The main working branch where all development happens. This is the default branch for pull requests and feature development.
 - `main`: The stable branch used for production releases. Code is merged from `develop` to `main` when preparing a new release.
 
 ## **Build and Release Process**
@@ -196,7 +196,7 @@ The repository uses the following branching strategy:
 All workflows (test, beta-release, and release) can be triggered manually via the GitHub Actions interface for on-demand execution when needed.
 
 ### **Beta Builds**
-Pushing tags to the `develop` branch triggers beta builds. Beta builds are marked as pre-releases and follow this naming convention: `beta-N` where N is the build number. This ensures beta releases are intentional and controlled.
+Pushing tags to the `develop` branch triggers beta builds. Beta builds are marked as pre-releases and are named based on the tag.
 
 To create a beta release:
 ```bash
