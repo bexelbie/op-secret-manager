@@ -238,6 +238,7 @@ MAP_FILE_PATH=/path/to/map/file`
 	})
 }
 
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()

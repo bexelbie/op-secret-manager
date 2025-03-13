@@ -151,6 +151,9 @@ func readConfig(verbose bool, configFilePath string) (string, string, error) {
 }
 
 // getSUIDUser returns the SUID user's username.
+// This function is not unit tested due to its reliance on system calls
+// that require root privileges and specific system setup.
+//gocov:ignore
 func getSUIDUser(verbose bool) (string, error) {
 	euid := syscall.Geteuid()
 	logVerbose(verbose, "Effective UID (EUID): %d", euid)
@@ -163,6 +166,9 @@ func getSUIDUser(verbose bool) (string, error) {
 }
 
 // elevateSUID elevates to the SUID user.
+// This function is not unit tested due to its reliance on system calls
+// that require root privileges and specific system setup.
+//gocov:ignore
 func elevateSUID(verbose bool, username string) error {
 	logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
 	u, err := user.Lookup(username)
@@ -222,6 +228,9 @@ func elevateSUID(verbose bool, username string) error {
 }
 
 // dropSUID drops SUID privileges by switching to the current user.
+// This function is not unit tested due to its reliance on system calls
+// that require root privileges and specific system setup.
+//gocov:ignore
 func dropSUID(verbose bool, username string) error {
 	logVerbose(verbose, "Dropping SUID privileges, switching to user: %s", username)
 	u, err := user.Lookup(username)
