@@ -201,8 +201,8 @@ Pushing tags to the `develop` branch triggers beta builds. Beta builds are marke
 To create a beta release:
 ```bash
 git checkout develop
-git tag beta-1
-git push origin beta-1
+git tag b0.2.0
+git push origin b0.2.0
 ```
 
 ### **Production Releases**
