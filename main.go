@@ -210,17 +210,24 @@ func elevateSUID(verbose bool, username string) error {
 		return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
 	}
 
+	// Check if we're already the SUID user
+	currentUID := syscall.Getuid()
+	if currentUID == uid {
+		logVerbose(verbose, "Already running as user %s (UID %d)", username, uid)
+		return nil
+	}
+
 	// Skip supplementary groups since they're not needed for our use case
 	logVerbose(verbose, "Skipping supplementary groups for user: %s", username)
 
 	// Try setting GID first
 	gidErr := syscall.Setgid(gid)
 	if gidErr != nil {
-		logVerbose(verbose, "Warning: failed to set GID: %v", gidErr)
+		logVerbose(verbose, "Warning: failed to set GID: %v (continuing with UID change only)", gidErr)
 	} else {
 		// Verify GID change if it was set
 		if syscall.Getgid() != gid || syscall.Getegid() != gid {
-			return fmt.Errorf("elevateSUID: GID change verification failed")
+			logVerbose(verbose, "Warning: GID change verification failed (continuing with UID change only)")
 		}
 	}
 
@@ -231,16 +238,14 @@ func elevateSUID(verbose bool, username string) error {
 	}
 
 	// Verify UID change
-	if syscall.Getuid() != uid || syscall.Geteuid() != uid {
-		return fmt.Errorf("elevateSUID: UID change verification failed")
+	currentUID = syscall.Getuid()
+	currentEUID := syscall.Geteuid()
+	if currentUID != uid || currentEUID != uid {
+		return fmt.Errorf("elevateSUID: UID change verification failed (current: %d/%d, expected: %d)", 
+			currentUID, currentEUID, uid)
 	}
 
-	// If GID failed but UID succeeded, we can continue
-	if gidErr != nil {
-		logVerbose(verbose, "Continuing with UID change only")
-	}
-
-	logVerbose(verbose, "Successfully switched to user: %s", username)
+	logVerbose(verbose, "Successfully switched to user: %s (UID: %d)", username, uid)
 	return nil
 }
 
