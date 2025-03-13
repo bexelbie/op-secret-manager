@@ -507,14 +507,9 @@ func TestResolveSecretWithTimeout(t *testing.T) {
 
 // TestHandleSignals tests the handleSignals function.
 func TestHandleSignals(t *testing.T) {
-	// Skip test if syscall is not available (e.g. on Windows)
-	if _, ok := os.LookupEnv("GOOS"); ok && runtime.GOOS == "windows" {
-		t.Skip("Skipping signal tests on Windows")
-	}
-
-	// Check if syscall package is available
-	if !isSyscallAvailable() {
-		t.Skip("Skipping signal tests - syscall not available")
+	// Skip test on non-Linux platforms
+	if runtime.GOOS != "linux" {
+		t.Skipf("Skipping signal tests on %s platform", runtime.GOOS)
 	}
 
 	t.Run("SIGINT cancels context", func(t *testing.T) {
@@ -522,7 +517,11 @@ func TestHandleSignals(t *testing.T) {
 		handleSignals(cancel)
 
 		// Simulate SIGINT
-		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+		process, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			t.Fatalf("Failed to find process: %v", err)
+		}
+		process.Signal(os.Interrupt)
 
 		// Give the signal handler time to process
 		time.Sleep(100 * time.Millisecond)
@@ -540,7 +539,11 @@ func TestHandleSignals(t *testing.T) {
 		handleSignals(cancel)
 
 		// Simulate SIGTERM
-		syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		process, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			t.Fatalf("Failed to find process: %v", err)
+		}
+		process.Signal(syscall.SIGTERM)
 
 		// Give the signal handler time to process
 		time.Sleep(100 * time.Millisecond)
@@ -567,20 +570,6 @@ func TestHandleSignals(t *testing.T) {
 			// Expected case
 		}
 	})
-}
-
-// isSyscallAvailable checks if the syscall package is available
-func isSyscallAvailable() bool {
-	defer func() {
-		if r := recover(); r != nil {
-			// If we panic, syscall is not available
-			return
-		}
-	}()
-	
-	// Try to use syscall to see if it's available
-	_ = syscall.Getpid()
-	return true
 }
 
 // TestProcessMapFile tests the processMapFile function.
