@@ -3,14 +3,78 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/1password/onepassword-sdk-go"
 )
+
+// captureOutput temporarily replaces os.Stdout to capture log output
+func captureOutput(f func()) string {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	f()
+
+	w.Close()
+	os.Stdout = old
+
+	var buf strings.Builder
+	_, _ = io.Copy(&buf, r)
+	return buf.String()
+}
+
+// TestLogVerbose tests the logVerbose function
+func TestLogVerbose(t *testing.T) {
+	t.Run("verbose enabled with sensitive info", func(t *testing.T) {
+		output := captureOutput(func() {
+			logVerbose(true, "Processing secret: %s", "op://vault/item/field")
+		})
+
+		expected := "[VERBOSE] Processing secret: op://vau.../ite.../fie...\n"
+		if output != expected {
+			t.Errorf("Expected output %q, got %q", expected, output)
+		}
+	})
+
+	t.Run("verbose enabled with non-sensitive info", func(t *testing.T) {
+		output := captureOutput(func() {
+			logVerbose(true, "Processing file: %s", "/path/to/file")
+		})
+
+		expected := "[VERBOSE] Processing file: /path/to/file\n"
+		if output != expected {
+			t.Errorf("Expected output %q, got %q", expected, output)
+		}
+	})
+
+	t.Run("verbose disabled", func(t *testing.T) {
+		output := captureOutput(func() {
+			logVerbose(false, "This should not appear")
+		})
+
+		if output != "" {
+			t.Errorf("Expected no output, got %q", output)
+		}
+	})
+
+	t.Run("verbose enabled with mixed content", func(t *testing.T) {
+		output := captureOutput(func() {
+			logVerbose(true, "Secret: %s, Path: %s", "op://vault/item/field", "/path/to/file")
+		})
+
+		expected := "[VERBOSE] Secret: op://vau.../ite.../fie..., Path: /path/to/file\n"
+		if output != expected {
+			t.Errorf("Expected output %q, got %q", expected, output)
+		}
+	})
+}
 
 // MockOPClient is a unified mock implementation of OPClient and SecretResolver.
 type MockOPClient struct {

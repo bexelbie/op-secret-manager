@@ -47,34 +47,37 @@ func (osFileWriter) Chown(name string, uid, gid int) error {
 
 // logVerbose prints verbose log messages.
 func logVerbose(verbose bool, format string, args ...interface{}) {
-	if verbose {
-		redactedArgs := make([]interface{}, len(args))
-		for i, arg := range args {
-			switch v := arg.(type) {
-			case string:
-				// Redact secret values in the format op://vault/item/field
-				if strings.HasPrefix(v, "op://") {
-					parts := strings.Split(v, "/")
-					for i := range parts {
-						if len(parts[i]) > 5 {
-							if i > 0 {
-								parts[i] = parts[i][:5]
-							} else {
-								parts[i] = parts[i][len(parts[i])-5:]
-							}
-						}
-					}
-					redactedArgs[i] = strings.Join(parts, "/")
-				} else {
-					redactedArgs[i] = v
-				}
-			default:
-				redactedArgs[i] = v
-			}
-		}
-		fmt.Printf("[VERBOSE] "+format+"\n", redactedArgs...)
-	}
-}
+     if verbose {
+         redactedArgs := make([]interface{}, len(args))
+         for i, arg := range args {
+             switch v := arg.(type) {
+             case string:
+                 // Redact secret values in the format op://vault/item/field
+                 if strings.HasPrefix(v, "op://") {
+                     parts := strings.Split(v, "/")
+                     if len(parts) >= 3 {
+                         // Redact middle parts
+                         for i := 1; i < len(parts)-1; i++ {
+                             if len(parts[i]) > 3 {
+                                 parts[i] = parts[i][:3] + "..."
+                             }
+                         }
+                         // Redact last part
+                         if len(parts[len(parts)-1]) > 3 {
+                             parts[len(parts)-1] = parts[len(parts)-1][:3] + "..."
+                         }
+                     }
+                     redactedArgs[i] = strings.Join(parts, "/")
+                 } else {
+                     redactedArgs[i] = v
+                 }
+             default:
+                 redactedArgs[i] = v
+             }
+         }
+         fmt.Printf("[VERBOSE] "+format+"\n", redactedArgs...)
+     }
+ }
 
 // SecretResolver defines the interface for resolving secrets.
 type SecretResolver interface {
