@@ -2,8 +2,8 @@ name: Beta Release
 
 on:
   push:
-    branches:
-      - develop
+    tags:
+      - develop/** # Only trigger on tags pushed to develop branch
   workflow_dispatch:
 
 env:
