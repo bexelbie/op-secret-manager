@@ -184,17 +184,35 @@ To build the program from source, follow these steps:
 
 ---
 
-## **Pushing New Releases**
+## **Branching Strategy**
 
-To create a new release:
+The repository uses the following branching strategy:
 
-1. **Tag a Release**:
+- `develop`: The main working branch where all development happens. This is the default branch for pull requests and feature development. Pushes to this branch automatically trigger beta builds.
+- `main`: The stable branch used for production releases. Code is merged from `develop` to `main` when preparing a new release.
+
+## **Build and Release Process**
+
+### **Beta Builds**
+Pushing to the `develop` branch automatically triggers a beta build. Beta builds are marked as pre-releases and follow this naming convention: `beta-N` where N is the build number.
+
+### **Production Releases**
+To create a new production release:
+
+1. **Merge to Main**:
+   ```bash
+   git checkout main
+   git merge develop
+   git push origin main
+   ```
+
+2. **Tag a Release**:
    ```bash
    git tag v1.0.0
    git push origin v1.0.0
    ```
 
-2. **Automated Build and Release**:
+3. **Automated Build and Release**:
    - The GitHub Actions workflow (`.github/workflows/release.yml`) will automatically build the binaries and create a release when you push a tag.
    - Binaries for Linux (AMD64 and ARM64) are built by default.
 

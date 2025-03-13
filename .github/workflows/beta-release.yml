@@ -1,0 +1,143 @@
+name: Beta Release
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+env:
+  BUILD_MACOS: 'false'
+  BUILD_WINDOWS: 'false'
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build for Linux
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o op-secret-manager-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -o op-secret-manager-linux-arm64 .
+
+      - name: Build for macOS
+        if: ${{ env.BUILD_MACOS == 'true' }}
+        run: |
+          GOOS=darwin GOARCH=amd64 go build -o op-secret-manager-darwin-amd64 .
+          GOOS=darwin GOARCH=arm64 go build -o op-secret-manager-darwin-arm64 .
+
+      - name: Build for Windows
+        if: ${{ env.BUILD_WINDOWS == 'true' }}
+        run: |
+          GOOS=windows GOARCH=amd64 go build -o op-secret-manager-windows-amd64.exe .
+          GOOS=windows GOARCH=arm64 go build -o op-secret-manager-windows-arm64.exe .
+
+      - name: Upload Release Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            op-secret-manager-linux-amd64
+            op-secret-manager-linux-arm64
+            op-secret-manager-darwin-amd64
+            op-secret-manager-darwin-arm64
+            op-secret-manager-windows-amd64.exe
+            op-secret-manager-windows-arm64.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Release Assets
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: binaries
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: beta-${{ github.run_number }} # Naming convention: beta-1, beta-2, etc.
+          release_name: Beta Release beta-${{ github.run_number }}
+          draft: false
+          prerelease: true # Important: Marks it as a pre-release
+
+      - name: Upload Release Assets (Linux AMD64)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: binaries/op-secret-manager-linux-amd64
+          asset_name: op-secret-manager-linux-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload Release Assets (Linux ARM64)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: binaries/op-secret-manager-linux-arm64
+          asset_name: op-secret-manager-linux-arm64
+          asset_content_type: application/octet-stream
+
+      - name: Upload Release Assets (macOS AMD64)
+        if: ${{ env.BUILD_MACOS == 'true' }}
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: binaries/op-secret-manager-darwin-amd64
+          asset_name: op-secret-manager-darwin-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload Release Assets (macOS ARM64)
+        if: ${{ env.BUILD_MACOS == 'true' }}
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: binaries/op-secret-manager-darwin-arm64
+          asset_name: op-secret-manager-darwin-arm64
+          asset_content_type: application/octet-stream
+
+      - name: Upload Release Assets (Windows AMD64)
+        if: ${{ env.BUILD_WINDOWS == 'true' }}
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: binaries/op-secret-manager-windows-amd64.exe
+          asset_name: op-secret-manager-windows-amd64.exe
+          asset_content_type: application/octet-stream
+
+      - name: Upload Release Assets (Windows ARM64)
+        if: ${{ env.BUILD_WINDOWS == 'true' }}
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: binaries/op-secret-manager-windows-arm64.exe
+          asset_name: op-secret-manager-windows-arm64.exe
+          asset_content_type: application/octet-stream
