@@ -352,6 +352,48 @@ func TestSetupContext(t *testing.T) {
 	})
 }
 
+// TestInitializeClient tests the initializeClient function.
+func TestInitializeClient(t *testing.T) {
+	t.Run("valid API key", func(t *testing.T) {
+		// Use environment variable for valid API key
+		validAPIKey := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")
+		if validAPIKey == "" {
+			t.Skip("OP_SERVICE_ACCOUNT_TOKEN environment variable is not set")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		client, err := initializeClient(ctx, validAPIKey)
+		if err != nil {
+			t.Fatalf("Expected no error with valid API key, got: %v", err)
+		}
+
+		// Verify client is not nil
+		if client == nil {
+			t.Error("Expected non-nil client, got nil")
+		}
+	})
+
+	t.Run("invalid API key", func(t *testing.T) {
+		// Use a clearly invalid API key
+		invalidAPIKey := "invalid-api-key-123"
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, err := initializeClient(ctx, invalidAPIKey)
+		if err == nil {
+			t.Fatal("Expected error with invalid API key, got nil")
+		}
+
+		// Verify the error message contains useful information
+		if !strings.Contains(err.Error(), "failed to create client") {
+			t.Errorf("Expected error message to contain 'failed to create client', got: %v", err)
+		}
+	})
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
