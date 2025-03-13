@@ -12,7 +12,7 @@ This is a Go program that retrieves secrets from 1Password using the 1Password G
 The program is intended to securely manage and distribute secrets to users on a Linux system. It works as follows:
 
 1. A user (e.g., `postgres`) runs the program.
-2. The program is setuid to another user (`op`) to elevate permissions.
+2. The program is setuid and setgid to another user (`op`) to elevate permissions.
 3. The program reads a service API key from `/mnt/service-1p/api`. This location is set in the configuration file.
 4. It reads a map of secrets and their corresponding file locations from `/mnt/service-1p/mapfile`. This location is set in the configuration file.
 5. The program retrieves each secret that belongs to the user running the program and writes them to the specified file locations in `/run/<uid>/secrets/`.
