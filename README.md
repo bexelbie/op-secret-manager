@@ -193,6 +193,8 @@ The repository uses the following branching strategy:
 
 ## **Build and Release Process**
 
+All workflows (test, beta-release, and release) can be triggered manually via the GitHub Actions interface for on-demand execution when needed.
+
 ### **Beta Builds**
 Pushing tags to the `develop` branch triggers beta builds. Beta builds are marked as pre-releases and follow this naming convention: `beta-N` where N is the build number. This ensures beta releases are intentional and controlled.
 
