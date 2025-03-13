@@ -194,7 +194,14 @@ The repository uses the following branching strategy:
 ## **Build and Release Process**
 
 ### **Beta Builds**
-Pushing to the `develop` branch automatically triggers a beta build. Beta builds are marked as pre-releases and follow this naming convention: `beta-N` where N is the build number.
+Pushing tags to the `develop` branch triggers beta builds. Beta builds are marked as pre-releases and follow this naming convention: `beta-N` where N is the build number. This ensures beta releases are intentional and controlled.
+
+To create a beta release:
+```bash
+git checkout develop
+git tag beta-1
+git push origin beta-1
+```
 
 ### **Production Releases**
 To create a new production release:
@@ -238,7 +245,7 @@ go test -v ./...
 
 ### **GitHub Actions Testing**
 
-The test suite includes integration tests that require 1Password credentials. To configure GitHub Actions:
+Tests run on every push to any branch and on pull requests, ensuring continuous validation of code changes. The test suite includes integration tests that require 1Password credentials. To configure GitHub Actions:
 
 1. In your GitHub repository, go to Settings > Secrets and variables > Actions
 2. Add the following secrets:
