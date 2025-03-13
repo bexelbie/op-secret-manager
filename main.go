@@ -24,12 +24,12 @@ const (
 	// that contains API key and map file paths. This path is hardcoded
 	// for security reasons to prevent arbitrary file access.
 	configFilePath = "/opt/1Password/op-secret-manager.conf"
-	
+
 	// opTimeout is the default timeout for 1Password operations.
 	// This timeout is used for API calls and file operations to prevent
 	// indefinite hangs. Adjust this value based on network conditions
 	// and expected operation times.
-	opTimeout      = 10 * time.Second
+	opTimeout = 10 * time.Second
 )
 
 // fileWriter defines the interface for file system operations.
@@ -42,12 +42,12 @@ type fileWriter interface {
 	// Implementations should ensure atomic writes to prevent
 	// partial file corruption in case of failures.
 	WriteFile(filename string, data []byte, perm os.FileMode) error
-	
+
 	// MkdirAll creates a directory and all necessary parent directories
 	// with the specified permissions. Similar to os.MkdirAll but with
 	// consistent permission handling.
 	MkdirAll(path string, perm os.FileMode) error
-	
+
 	// Chown changes the ownership of a file or directory.
 	// Implementations must handle both files and directories
 	// and verify ownership changes were successful.
@@ -71,37 +71,37 @@ func (osFileWriter) Chown(name string, uid, gid int) error {
 
 // logVerbose prints verbose log messages.
 func logVerbose(verbose bool, format string, args ...interface{}) {
-     if verbose {
-         redactedArgs := make([]interface{}, len(args))
-         for i, arg := range args {
-             switch v := arg.(type) {
-             case string:
-                 // Redact secret values in the format op://vault/item/field
-                 if strings.HasPrefix(v, "op://") {
-                     parts := strings.Split(v, "/")
-                     if len(parts) >= 3 {
-                         // Redact middle parts
-                         for i := 1; i < len(parts)-1; i++ {
-                             if len(parts[i]) > 3 {
-                                 parts[i] = parts[i][:3] + "..."
-                             }
-                         }
-                         // Redact last part
-                         if len(parts[len(parts)-1]) > 3 {
-                             parts[len(parts)-1] = parts[len(parts)-1][:3] + "..."
-                         }
-                     }
-                     redactedArgs[i] = strings.Join(parts, "/")
-                 } else {
-                     redactedArgs[i] = v
-                 }
-             default:
-                 redactedArgs[i] = v
-             }
-         }
-         fmt.Printf("[VERBOSE] "+format+"\n", redactedArgs...)
-     }
- }
+	if verbose {
+		redactedArgs := make([]interface{}, len(args))
+		for i, arg := range args {
+			switch v := arg.(type) {
+			case string:
+				// Redact secret values in the format op://vault/item/field
+				if strings.HasPrefix(v, "op://") {
+					parts := strings.Split(v, "/")
+					if len(parts) >= 3 {
+						// Redact middle parts
+						for i := 1; i < len(parts)-1; i++ {
+							if len(parts[i]) > 3 {
+								parts[i] = parts[i][:3] + "..."
+							}
+						}
+						// Redact last part
+						if len(parts[len(parts)-1]) > 3 {
+							parts[len(parts)-1] = parts[len(parts)-1][:3] + "..."
+						}
+					}
+					redactedArgs[i] = strings.Join(parts, "/")
+				} else {
+					redactedArgs[i] = v
+				}
+			default:
+				redactedArgs[i] = v
+			}
+		}
+		fmt.Printf("[VERBOSE] "+format+"\n", redactedArgs...)
+	}
+}
 
 // SecretResolver defines the interface for resolving secrets.
 type SecretResolver interface {
@@ -177,6 +177,7 @@ func readConfig(verbose bool, configFilePath string) (string, string, error) {
 // getSUIDUser returns the SUID user's username.
 // This function is not unit tested due to its reliance on system calls
 // that require root privileges and specific system setup.
+//
 //gocov:ignore
 func getSUIDUser(verbose bool) (string, error) {
 	euid := syscall.Geteuid()
@@ -192,6 +193,7 @@ func getSUIDUser(verbose bool) (string, error) {
 // elevateSUID elevates to the SUID user.
 // This function is not unit tested due to its reliance on system calls
 // that require root privileges and specific system setup.
+//
 //gocov:ignore
 func elevateSUID(verbose bool, username string) error {
 	logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
@@ -254,6 +256,7 @@ func elevateSUID(verbose bool, username string) error {
 // dropSUID drops SUID privileges by switching to the current user.
 // This function is not unit tested due to its reliance on system calls
 // that require root privileges and specific system setup.
+//
 //gocov:ignore
 func dropSUID(verbose bool, username string) error {
 	logVerbose(verbose, "Dropping SUID privileges, switching to user: %s", username)

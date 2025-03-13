@@ -253,7 +253,6 @@ MAP_FILE_PATH=/path/to/map/file`
 	})
 }
 
-
 // TestReadAPIKey tests the readAPIKey function.
 func TestReadAPIKey(t *testing.T) {
 	t.Run("valid API key file", func(t *testing.T) {
@@ -329,9 +328,9 @@ func TestSetupContext(t *testing.T) {
 		}
 
 		expectedDeadline := time.Now().Add(timeout)
-		if deadline.After(expectedDeadline.Add(10*time.Millisecond)) || 
+		if deadline.After(expectedDeadline.Add(10*time.Millisecond)) ||
 			deadline.Before(expectedDeadline.Add(-10*time.Millisecond)) {
-			t.Errorf("Deadline not within expected range. Got: %v, Expected around: %v", 
+			t.Errorf("Deadline not within expected range. Got: %v, Expected around: %v",
 				deadline, expectedDeadline)
 		}
 
@@ -347,7 +346,7 @@ func TestSetupContext(t *testing.T) {
 	t.Run("cancel before timeout", func(t *testing.T) {
 		timeout := 100 * time.Millisecond
 		ctx, cancel := setupContext(timeout)
-		
+
 		// Cancel immediately
 		cancel()
 
@@ -473,7 +472,7 @@ func TestResolveSecretWithTimeout(t *testing.T) {
 			resolveFunc: func(ctx context.Context, secretRef string) (string, error) {
 				// Simulate a long-running operation that exceeds the timeout
 				time.Sleep(200 * time.Millisecond)
-				
+
 				// Check if context was cancelled
 				select {
 				case <-ctx.Done():
@@ -504,7 +503,7 @@ func TestResolveSecretWithTimeout(t *testing.T) {
 			// Use a shorter timeout for the test
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
-			
+
 			value, err := resolveSecretWithTimeout(ctx, mockClient, "test-secret")
 
 			if tt.expectError {
@@ -624,7 +623,7 @@ func TestCleanupSecretFiles(t *testing.T) {
 	// Create a temporary map file
 	mapFileContent := fmt.Sprintf(`%s	op://vault/item/field1	%s
 %s	op://vault/item/field2	%s
-otheruser	op://vault/item/field3	%s`, 
+otheruser	op://vault/item/field3	%s`,
 		currentUser.Username, file1,
 		currentUser.Username, file2,
 		file3)
