@@ -210,24 +210,8 @@ func elevateSUID(verbose bool, username string) error {
 		return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
 	}
 
-	// Get supplementary groups
-	gids, err := u.GroupIds()
-	if err != nil {
-		return fmt.Errorf("elevateSUID: failed to get supplementary groups for user %s: %w", username, err)
-	}
-	gidList := make([]int, len(gids))
-	for i, g := range gids {
-		gidInt, err := strconv.Atoi(g)
-		if err != nil {
-			return fmt.Errorf("elevateSUID: invalid GID in supplementary groups for user %s: %w", username, err)
-		}
-		gidList[i] = gidInt
-	}
-
-	// Set supplementary groups
-	if err := syscall.Setgroups(gidList); err != nil {
-		return fmt.Errorf("elevateSUID: failed to set supplementary groups: %w", err)
-	}
+	// Skip supplementary groups since they're not needed for our use case
+	logVerbose(verbose, "Skipping supplementary groups for user: %s", username)
 
 	// Set GID
 	if err := syscall.Setgid(gid); err != nil {
@@ -273,24 +257,8 @@ func dropSUID(verbose bool, username string) error {
 		return fmt.Errorf("dropSUID: invalid GID for user %s: %w", username, err)
 	}
 
-	// Get supplementary groups
-	gids, err := u.GroupIds()
-	if err != nil {
-		return fmt.Errorf("dropSUID: failed to get supplementary groups for user %s: %w", username, err)
-	}
-	gidList := make([]int, len(gids))
-	for i, g := range gids {
-		gidInt, err := strconv.Atoi(g)
-		if err != nil {
-			return fmt.Errorf("dropSUID: invalid GID in supplementary groups for user %s: %w", username, err)
-		}
-		gidList[i] = gidInt
-	}
-
-	// Set supplementary groups
-	if err := syscall.Setgroups(gidList); err != nil {
-		return fmt.Errorf("dropSUID: failed to set supplementary groups: %w", err)
-	}
+	// Skip supplementary groups since they're not needed for our use case
+	logVerbose(verbose, "Skipping supplementary groups for user: %s", username)
 
 	// Set GID
 	if err := syscall.Setgid(gid); err != nil {
