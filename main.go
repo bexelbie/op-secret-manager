@@ -512,18 +512,28 @@ func main() {
 	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
 	logVerbose(*verbose, "Running with SUID privileges (EUID: %d)", syscall.Geteuid())
 
-	// Read configuration.
+	// Read configuration while still privileged
 	apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Read API key.
+	// Read API key while still privileged
 	apiKey, err := readAPIKey(*verbose, apiKeyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Read map file contents while still privileged
+	var mapFileContent []byte
+	if *cleanup {
+		mapFileContent, err = os.ReadFile(mapFilePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Drop SUID privileges.
@@ -545,7 +555,21 @@ func main() {
 
 	// Process the map file or cleanup files.
 	if *cleanup {
-		if err := cleanupSecretFiles(mapFilePath, currentUser, *verbose); err != nil {
+		// Create a temporary file with the map file contents
+		tmpFile, err := os.CreateTemp("", "op-secret-manager-mapfile")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		if _, err := tmpFile.Write(mapFileContent); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		tmpFile.Close()
+
+		if err := cleanupSecretFiles(tmpFile.Name(), currentUser, *verbose); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
