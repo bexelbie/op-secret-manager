@@ -543,7 +543,7 @@ func TestHandleSignals(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to find process: %v", err)
 		}
-		process.Signal(syscall.SIGTERM)
+		process.Signal(os.Kill) // Use os.Kill instead of syscall.SIGTERM
 
 		// Give the signal handler time to process
 		time.Sleep(100 * time.Millisecond)
