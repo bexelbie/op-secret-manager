@@ -93,7 +93,7 @@ func (m *MockOPClient) Resolve(ctx context.Context, secretRef string) (string, e
 }
 
 // TestSecrets tests secret resolution using a live 1Password client.
-func TestSecrets(t *testing.T) {
+func TestSecrets_SuccedingLiveCall(t *testing.T) {
 	apiKey := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")
 	if apiKey == "" {
 		t.Skip("OP_SERVICE_ACCOUNT_TOKEN environment variable is not set")
