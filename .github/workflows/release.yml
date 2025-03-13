@@ -15,7 +15,11 @@ permissions:
   packages: read  # Optional, only needed if you're accessing packages
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
