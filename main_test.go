@@ -161,7 +161,7 @@ func TestSecrets_FailingLiveCall(t *testing.T) {
 
 	secretRef := os.Getenv("SECRET_REF_FAIL")
 	if secretRef == "" {
-		t.Skip("SECRET_REF_FAIL environment variable is not set")
+		t.Skip("Skipping integration test: SECRET_REF_FAIL environment variable is not set")
 	}
 	_, err = client.Secrets().Resolve(context.TODO(), secretRef)
 	if err == nil {
