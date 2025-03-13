@@ -94,11 +94,18 @@ func (m *MockOPClient) Resolve(ctx context.Context, secretRef string) (string, e
 	return "", fmt.Errorf("ResolveSecretFunc not implemented")
 }
 
-// TestSecrets tests secret resolution using a live 1Password client.
+// TestSecrets_SuccedingLiveCall tests secret resolution using a live 1Password client.
+// This is an integration test that requires:
+// 1. A valid 1Password service account token set in OP_SERVICE_ACCOUNT_TOKEN
+// 2. Valid secret references set in SECRET_REF1, SECRET_REF2, etc.
+// 3. Expected secret values set in SECRET_VAL1, SECRET_VAL2, etc.
+// The test will be skipped if these environment variables are not set.
+// Note: This test makes actual API calls to 1Password services and
+// should be run in a controlled environment with test credentials.
 func TestSecrets_SuccedingLiveCall(t *testing.T) {
 	apiKey := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")
 	if apiKey == "" {
-		t.Skip("OP_SERVICE_ACCOUNT_TOKEN environment variable is not set")
+		t.Skip("Skipping integration test: OP_SERVICE_ACCOUNT_TOKEN environment variable is not set")
 	}
 
 	client, err := onepassword.NewClient(
@@ -130,11 +137,17 @@ func TestSecrets_SuccedingLiveCall(t *testing.T) {
 	}
 }
 
-// TestSecrets_FailingLiveCall tests a failing live 1Password call.
+// TestSecrets_FailingLiveCall tests error handling for invalid secret references.
+// This is an integration test that requires:
+// 1. A valid 1Password service account token set in OP_SERVICE_ACCOUNT_TOKEN
+// 2. An invalid secret reference set in SECRET_REF_FAIL
+// The test verifies that the client properly handles invalid secret references
+// and returns appropriate errors. The test will be skipped if the required
+// environment variables are not set.
 func TestSecrets_FailingLiveCall(t *testing.T) {
 	apiKey := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")
 	if apiKey == "" {
-		t.Skip("OP_SERVICE_ACCOUNT_TOKEN environment variable is not set")
+		t.Skip("Skipping integration test: OP_SERVICE_ACCOUNT_TOKEN environment variable is not set")
 	}
 
 	client, err := onepassword.NewClient(
@@ -354,12 +367,17 @@ func TestSetupContext(t *testing.T) {
 }
 
 // TestInitializeClient tests the initializeClient function.
+// This test includes both unit tests and integration tests:
+// - Unit tests verify error handling with invalid API keys
+// - Integration tests verify successful client initialization
+// The integration test requires a valid 1Password service account token
+// set in OP_SERVICE_ACCOUNT_TOKEN and will be skipped if not set.
 func TestInitializeClient(t *testing.T) {
 	t.Run("valid API key", func(t *testing.T) {
 		// Use environment variable for valid API key
 		validAPIKey := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")
 		if validAPIKey == "" {
-			t.Skip("OP_SERVICE_ACCOUNT_TOKEN environment variable is not set")
+			t.Skip("Skipping integration test: OP_SERVICE_ACCOUNT_TOKEN environment variable is not set")
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -506,10 +524,15 @@ func TestResolveSecretWithTimeout(t *testing.T) {
 }
 
 // TestHandleSignals tests the handleSignals function.
+// This test verifies that the signal handler properly cancels the context
+// when receiving SIGINT or SIGTERM signals. The test is limited to Linux
+// platforms due to differences in signal handling across operating systems.
+// Note: This test manipulates process signals and should be run in isolation
+// to avoid interference with other tests or the test runner.
 func TestHandleSignals(t *testing.T) {
-	// Skip test on non-Linux platforms
+	// Skip test on non-Linux platforms due to signal handling differences
 	if runtime.GOOS != "linux" {
-		t.Skipf("Skipping signal tests on %s platform", runtime.GOOS)
+		t.Skipf("Skipping signal tests on %s platform due to platform-specific signal handling", runtime.GOOS)
 	}
 
 	t.Run("SIGINT cancels context", func(t *testing.T) {
@@ -640,6 +663,10 @@ otheruser	op://vault/item/field3	%s`,
 }
 
 // TestVerifyPermissionsAndOwnership tests the verifyPermissionsAndOwnership function.
+// This test verifies that the function correctly checks file permissions and ownership.
+// Note: Some test cases are skipped when running as root since root can bypass
+// permission and ownership checks. These tests are most meaningful when run as
+// a non-privileged user.
 func TestVerifyPermissionsAndOwnership(t *testing.T) {
 	currentUser, err := user.Current()
 	if err != nil {

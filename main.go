@@ -18,15 +18,39 @@ import (
 	"github.com/1password/onepassword-sdk-go"
 )
 
+// Configuration constants
 const (
+	// configFilePath is the default location of the configuration file
+	// that contains API key and map file paths. This path is hardcoded
+	// for security reasons to prevent arbitrary file access.
 	configFilePath = "/opt/1Password/op-secret-manager.conf"
+	
+	// opTimeout is the default timeout for 1Password operations.
+	// This timeout is used for API calls and file operations to prevent
+	// indefinite hangs. Adjust this value based on network conditions
+	// and expected operation times.
 	opTimeout      = 10 * time.Second
 )
 
-// fileWriter defines the interface for writing files.
+// fileWriter defines the interface for file system operations.
+// This interface is used to abstract file system interactions
+// for better testability and to enable mocking in unit tests.
+// Implementations must ensure atomic writes where possible and
+// maintain proper file permissions and ownership.
 type fileWriter interface {
+	// WriteFile writes data to a file with specified permissions.
+	// Implementations should ensure atomic writes to prevent
+	// partial file corruption in case of failures.
 	WriteFile(filename string, data []byte, perm os.FileMode) error
+	
+	// MkdirAll creates a directory and all necessary parent directories
+	// with the specified permissions. Similar to os.MkdirAll but with
+	// consistent permission handling.
 	MkdirAll(path string, perm os.FileMode) error
+	
+	// Chown changes the ownership of a file or directory.
+	// Implementations must handle both files and directories
+	// and verify ownership changes were successful.
 	Chown(name string, uid, gid int) error
 }
 
