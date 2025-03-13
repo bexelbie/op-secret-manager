@@ -174,80 +174,6 @@ func readConfig(verbose bool, configFilePath string) (string, string, error) {
 	return apiKeyPath, mapFilePath, nil
 }
 
-// getSUIDUser returns the SUID user's username.
-// This function is not unit tested due to its reliance on system calls
-// that require root privileges and specific system setup.
-//
-//gocov:ignore
-func getSUIDUser(verbose bool) (string, error) {
-	euid := syscall.Geteuid()
-	logVerbose(verbose, "Effective UID (EUID): %d", euid)
-	u, err := user.LookupId(strconv.Itoa(euid))
-	if err != nil {
-		return "", fmt.Errorf("getSUIDUser: failed to lookup SUID user: %w", err)
-	}
-	logVerbose(verbose, "SUID user: %s", u.Username)
-	return u.Username, nil
-}
-
-// elevateSUID elevates to the SUID user.
-// This function is not unit tested due to its reliance on system calls
-// that require root privileges and specific system setup.
-//
-//gocov:ignore
-func elevateSUID(verbose bool, username string) error {
-	logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
-	u, err := user.Lookup(username)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: failed to lookup user %s: %w", username, err)
-	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: invalid UID for user %s: %w", username, err)
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
-	}
-
-	// Check if we're already the SUID user
-	currentUID := syscall.Getuid()
-	if currentUID == uid {
-		logVerbose(verbose, "Already running as user %s (UID %d)", username, uid)
-		return nil
-	}
-
-	// Skip supplementary groups since they're not needed for our use case
-	logVerbose(verbose, "Skipping supplementary groups for user: %s", username)
-
-	// Try setting GID first
-	gidErr := syscall.Setgid(gid)
-	if gidErr != nil {
-		logVerbose(verbose, "Warning: failed to set GID: %v (continuing with UID change only)", gidErr)
-	} else {
-		// Verify GID change if it was set
-		if syscall.Getgid() != gid || syscall.Getegid() != gid {
-			logVerbose(verbose, "Warning: GID change verification failed (continuing with UID change only)")
-		}
-	}
-
-	// Set UID - this is critical
-	uidErr := syscall.Setuid(uid)
-	if uidErr != nil {
-		return fmt.Errorf("elevateSUID: failed to set UID: %w", uidErr)
-	}
-
-	// Verify UID change
-	currentUID = syscall.Getuid()
-	currentEUID := syscall.Geteuid()
-	if currentUID != uid || currentEUID != uid {
-		return fmt.Errorf("elevateSUID: UID change verification failed (current: %d/%d, expected: %d)", 
-			currentUID, currentEUID, uid)
-	}
-
-	logVerbose(verbose, "Successfully switched to user: %s (UID: %d)", username, uid)
-	return nil
-}
 
 // dropSUID drops SUID privileges by switching to the current user.
 // This function is not unit tested due to its reliance on system calls
@@ -577,13 +503,6 @@ func main() {
 	// Handle signals for graceful shutdown
 	handleSignals(cancel)
 
-	// Determine SUID user.
-	suidUser, err := getSUIDUser(*verbose)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Get current user.
 	currentUser, err := user.Current()
 	if err != nil {
@@ -591,12 +510,7 @@ func main() {
 		os.Exit(1)
 	}
 	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
-
-	// Elevate to SUID user.
-	if err := elevateSUID(*verbose, suidUser); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	logVerbose(*verbose, "Running with SUID privileges (EUID: %d)", syscall.Geteuid())
 
 	// Read configuration.
 	apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
