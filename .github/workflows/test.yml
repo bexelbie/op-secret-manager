@@ -30,5 +30,6 @@ jobs:
           SECRET_VAL2: ${{ secrets.SECRET_VAL2 }}
           SECRET_REF3: ${{ secrets.SECRET_REF3 }}
           SECRET_VAL3: ${{ secrets.SECRET_VAL3 }}
+          SECRET_REF_FAIL: ${{ secrets.SECRET_REF_FAIL }}
         run: |
           go test -v ./...
