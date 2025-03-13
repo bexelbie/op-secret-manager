@@ -394,6 +394,45 @@ func TestInitializeClient(t *testing.T) {
 	})
 }
 
+// TestGetTimeoutForOperation tests the getTimeoutForOperation function.
+func TestGetTimeoutForOperation(t *testing.T) {
+	tests := []struct {
+		name     string
+		op       string
+		expected time.Duration
+	}{
+		{
+			name:     "resolveSecret operation",
+			op:       "resolveSecret",
+			expected: 15 * time.Second,
+		},
+		{
+			name:     "writeFile operation",
+			op:       "writeFile",
+			expected: 10 * time.Second,
+		},
+		{
+			name:     "createDirectory operation",
+			op:       "createDirectory",
+			expected: 5 * time.Second,
+		},
+		{
+			name:     "unknown operation",
+			op:       "unknownOperation",
+			expected: 10 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getTimeoutForOperation(tt.op)
+			if got != tt.expected {
+				t.Errorf("getTimeoutForOperation(%q) = %v, want %v", tt.op, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
