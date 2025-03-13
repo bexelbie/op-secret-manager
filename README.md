@@ -11,13 +11,11 @@ This is a Go program that retrieves secrets from 1Password using the 1Password G
 
 The program is intended to securely manage and distribute secrets to users on a Linux system. It works as follows:
 
-1. A user (e.g., `sleeper-postgres`) runs the program.
-2. The program is setuid to another user (`service-1p`) to elevate permissions.
-3. The program reads a service API key from `/mnt/service-1p/api`.
-4. It reads a map of secrets and their corresponding file locations from `/mnt/service-1p/mapfile`.
+1. A user (e.g., `postgres`) runs the program.
+2. The program is setuid to another user (`op`) to elevate permissions.
+3. The program reads a service API key from `/mnt/service-1p/api`. This location is set in the configuration file.
+4. It reads a map of secrets and their corresponding file locations from `/mnt/service-1p/mapfile`. This location is set in the configuration file.
 5. The program retrieves each secret that belongs to the user running the program and writes them to the specified file locations in `/run/<uid>/secrets/`.
-
-Here’s the section describing the `mapfile` format. You can add this to your `README.md`:
 
 ---
 
@@ -27,7 +25,7 @@ The program reads its configuration from `/opt/1Password/op-secret-manager.conf`
 
 #### **Configuration File Format**
 
-The configuration file is a simple key-value file. Here’s an example:
+The configuration file is a simple key-value file.  Ensure the file is readable by the user running the program.  Here’s an example:
 
 ```
 # Path to the API key file
@@ -41,25 +39,14 @@ MAP_FILE_PATH=/mnt/service-1p/mapfile
 - **`API_KEY_PATH`**: The path to the file containing the 1Password service account API key.
 - **`MAP_FILE_PATH`**: The path to the map file that defines secret mappings.
 
-#### **Example Configuration**
-
-Create the configuration file at `/opt/1Password/op-secret-manager.conf` with the following content:
-
-```
-API_KEY_PATH=/mnt/service-1p/api
-MAP_FILE_PATH=/mnt/service-1p/mapfile
-```
-
-Ensure the file is readable by the user running the program.
-
 ---
 
 ### **Map File Format**
 
-The `mapfile` is a plain text file that maps secrets from 1Password to specific file locations. Each line in the file represents a single mapping and follows this format:
+The `mapfile` is a plain text file with tab separated fields that maps secrets from 1Password to specific file locations. Each line in the file represents a single mapping and follows this format:
 
 ```
-<username>    <secret_reference>    <file_path>
+<username>\t<secret_reference>\t<file_path>
 ```
 
 #### **Fields**
@@ -71,8 +58,8 @@ The `mapfile` is a plain text file that maps secrets from 1Password to specific 
 Here’s an example `mapfile`:
 
 ```
-sleeper-postgres    op://vault1/item1/field1    /run/1001/secrets/db_password
-sleeper-postgres    op://vault1/item2/field2    /run/1001/secrets/api_key
+postgres	op://vault1/item1/field1	/run/1001/secrets/db_password
+postgres	op://vault1/item2/field2	/run/1001/secrets/api_key
 ```
 
 ### **Notes**
@@ -82,12 +69,93 @@ sleeper-postgres    op://vault1/item2/field2    /run/1001/secrets/api_key
 
 ---
 
-## **Getting a Built Binary**
+## **Getting Started**
+
+### **Prerequisites**
+- Linux system
+- 1Password service account with necessary permissions
+- Go 1.21+ (for building from source)
+
+### **Getting a Built Binary**
 
 Pre-built binaries are available on the [Releases page](https://github.com/bexelbie/op-secret-manager/releases). Download the appropriate binary for your platform:
 
 - `op-secret-manager-linux-amd64`: Linux (64-bit)
 - `op-secret-manager-linux-arm64`: Linux (ARM64)
+
+### **Installation**
+
+1. Download the appropriate binary for your system
+2. Move the binary to `/usr/local/bin/`:
+   ```bash
+   sudo mv op-secret-manager-linux-amd64 /usr/local/bin/op-secret-manager
+   ```
+3. Set ownership and permissions:
+   ```bash
+   sudo chown service-1p:service-1p /usr/local/bin/op-secret-manager
+   sudo chmod u+s /usr/local/bin/op-secret-manager
+   ```
+
+### **Configuration**
+
+1. Create the configuration directory:
+   ```bash
+   sudo mkdir -p /opt/1Password
+   sudo chmod 755 /opt/1Password
+   ```
+
+2. Create the configuration file at `/opt/1Password/op-secret-manager.conf`:
+   ```bash
+   sudo tee /opt/1Password/op-secret-manager.conf <<EOF
+   API_KEY_PATH=/mnt/service-1p/api
+   MAP_FILE_PATH=/mnt/service-1p/mapfile
+   EOF
+   sudo chmod 644 /opt/1Password/op-secret-manager.conf
+   ```
+
+3. Create the API key file:
+   ```bash
+   sudo mkdir -p /mnt/service-1p
+   echo "your-service-account-token" | sudo tee /mnt/service-1p/api
+   sudo chmod 600 /mnt/service-1p/api
+   sudo chown service-1p:service-1p /mnt/service-1p/api
+   ```
+
+4. Create the map file:
+   ```bash
+   sudo tee /mnt/service-1p/mapfile <<EOF
+   sleeper-postgres    op://vault1/item1/field1    /run/1001/secrets/db_password
+   sleeper-postgres    op://vault1/item2/field2    /run/1001/secrets/api_key
+   EOF
+   sudo chmod 600 /mnt/service-1p/mapfile
+   sudo chown service-1p:service-1p /mnt/service-1p/mapfile
+   ```
+
+### **Usage**
+
+Run the program as the target user:
+```bash
+postgres% op-secret-manager
+```
+
+To enable verbose logging:
+```bash
+postgres% op-secret-manager -v
+```
+
+To clean up created files:
+```bash
+postgres% op-secret-manager --cleanup
+```
+
+### **Verification**
+
+Check that secrets were written correctly:
+```bash
+ls -l /run/1001/secrets/
+cat /run/1001/secrets/db_password
+cat /run/1001/secrets/api_key
+```
 
 ---
 
@@ -143,11 +211,55 @@ To create a new release:
 
 ## **Testing**
 
-The project includes a test suite that verifies the functionality of the 1Password secret resolution. Tests are run automatically on every push and pull request using GitHub Actions.
+### **Local Testing**
 
 To run tests locally:
 ```bash
 go test -v ./...
+```
+
+### **GitHub Actions Testing**
+
+The test suite includes integration tests that require 1Password credentials. To configure GitHub Actions:
+
+1. In your GitHub repository, go to Settings > Secrets and variables > Actions
+2. Add the following secrets:
+   - `OP_SERVICE_ACCOUNT_TOKEN`: Your 1Password service account token
+   - `SECRET_REF1`: A valid 1Password secret reference (e.g., `op://vault/item/field`)
+   - `SECRET_VAL1`: The expected value for SECRET_REF1
+   - `SECRET_REF_FAIL`: An invalid 1Password secret reference for testing error cases
+
+Example secrets:
+```
+OP_SERVICE_ACCOUNT_TOKEN = op.sa.xxxxxxxxxxxxxxxxxxxxxxxx
+SECRET_REF1 = op://vault1/item1/field1
+SECRET_VAL1 = mysecretvalue
+SECRET_REF_FAIL = op://invalid/vault/item
+```
+
+### **Security Considerations**
+
+- Never commit secrets to your repository
+- Use GitHub Actions secrets for sensitive data
+- Restrict access to your 1Password service account
+- Use the principle of least privilege for vault access
+- Rotate service account tokens regularly
+- Monitor and audit secret access
+
+### **Test Configuration**
+
+The test workflow (`.github/workflows/test.yml`) is pre-configured to:
+1. Set up Go environment
+2. Run unit tests
+3. Run integration tests (if secrets are configured)
+4. Generate test coverage report
+
+To modify test behavior:
+```yaml
+env:
+  RUN_INTEGRATION_TESTS: 'true'  # Set to 'false' to skip integration tests
+  TEST_TIMEOUT: '5m'             # Maximum test duration
+  TEST_VERBOSE: 'true'           # Enable verbose test output
 ```
 
 ---
