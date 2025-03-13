@@ -433,6 +433,77 @@ func TestGetTimeoutForOperation(t *testing.T) {
 	}
 }
 
+// TestResolveSecretWithTimeout tests the resolveSecretWithTimeout function.
+func TestResolveSecretWithTimeout(t *testing.T) {
+	tests := []struct {
+		name          string
+		resolveFunc   func(ctx context.Context, secretRef string) (string, error)
+		expectedValue string
+		expectError   bool
+	}{
+		{
+			name: "successful resolution within timeout",
+			resolveFunc: func(ctx context.Context, secretRef string) (string, error) {
+				return "secret-value", nil
+			},
+			expectedValue: "secret-value",
+			expectError:   false,
+		},
+		{
+			name: "timeout exceeded",
+			resolveFunc: func(ctx context.Context, secretRef string) (string, error) {
+				// Simulate a long-running operation that exceeds the timeout
+				time.Sleep(200 * time.Millisecond)
+				
+				// Check if context was cancelled
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				default:
+					return "too-late", nil
+				}
+			},
+			expectedValue: "",
+			expectError:   true,
+		},
+		{
+			name: "error during resolution",
+			resolveFunc: func(ctx context.Context, secretRef string) (string, error) {
+				return "", fmt.Errorf("resolution error")
+			},
+			expectedValue: "",
+			expectError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := &MockOPClient{
+				ResolveSecretFunc: tt.resolveFunc,
+			}
+
+			// Use a shorter timeout for the test
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			
+			value, err := resolveSecretWithTimeout(ctx, mockClient, "test-secret")
+
+			if tt.expectError {
+				if err == nil {
+					t.Error("Expected error but got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error but got: %v", err)
+				}
+				if value != tt.expectedValue {
+					t.Errorf("Expected value %q but got %q", tt.expectedValue, value)
+				}
+			}
+		})
+	}
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
