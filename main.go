@@ -174,84 +174,6 @@ func readConfig(verbose bool, configFilePath string) (string, string, error) {
 	return apiKeyPath, mapFilePath, nil
 }
 
-// getSUIDUser returns the SUID user's username.
-// This function is not unit tested due to its reliance on system calls
-// that require root privileges and specific system setup.
-//
-//gocov:ignore
-func getSUIDUser(verbose bool) (string, error) {
-	euid := syscall.Geteuid()
-	logVerbose(verbose, "Effective UID (EUID): %d", euid)
-	u, err := user.LookupId(strconv.Itoa(euid))
-	if err != nil {
-		return "", fmt.Errorf("getSUIDUser: failed to lookup SUID user: %w", err)
-	}
-	logVerbose(verbose, "SUID user: %s", u.Username)
-	return u.Username, nil
-}
-
-// elevateSUID elevates to the SUID user.
-// This function is not unit tested due to its reliance on system calls
-// that require root privileges and specific system setup.
-//
-//gocov:ignore
-func elevateSUID(verbose bool, username string) error {
-	logVerbose(verbose, "Elevating to SUID privileges, switching to user: %s", username)
-	u, err := user.Lookup(username)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: failed to lookup user %s: %w", username, err)
-	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: invalid UID for user %s: %w", username, err)
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return fmt.Errorf("elevateSUID: invalid GID for user %s: %w", username, err)
-	}
-
-	// Get supplementary groups
-	gids, err := u.GroupIds()
-	if err != nil {
-		return fmt.Errorf("elevateSUID: failed to get supplementary groups for user %s: %w", username, err)
-	}
-	gidList := make([]int, len(gids))
-	for i, g := range gids {
-		gidInt, err := strconv.Atoi(g)
-		if err != nil {
-			return fmt.Errorf("elevateSUID: invalid GID in supplementary groups for user %s: %w", username, err)
-		}
-		gidList[i] = gidInt
-	}
-
-	// Set supplementary groups
-	if err := syscall.Setgroups(gidList); err != nil {
-		return fmt.Errorf("elevateSUID: failed to set supplementary groups: %w", err)
-	}
-
-	// Set GID
-	if err := syscall.Setgid(gid); err != nil {
-		return fmt.Errorf("elevateSUID: failed to set GID: %w", err)
-	}
-
-	// Verify GID change
-	if syscall.Getgid() != gid || syscall.Getegid() != gid {
-		return fmt.Errorf("elevateSUID: GID change verification failed")
-	}
-
-	// Set UID
-	if err := syscall.Setuid(uid); err != nil {
-		return fmt.Errorf("elevateSUID: failed to set UID: %w", err)
-	}
-
-	// Verify UID change
-	if syscall.Getuid() != uid || syscall.Geteuid() != uid {
-		return fmt.Errorf("elevateSUID: UID change verification failed")
-	}
-
-	logVerbose(verbose, "Successfully switched to user: %s", username)
-	return nil
-}
 
 // dropSUID drops SUID privileges by switching to the current user.
 // This function is not unit tested due to its reliance on system calls
@@ -273,24 +195,8 @@ func dropSUID(verbose bool, username string) error {
 		return fmt.Errorf("dropSUID: invalid GID for user %s: %w", username, err)
 	}
 
-	// Get supplementary groups
-	gids, err := u.GroupIds()
-	if err != nil {
-		return fmt.Errorf("dropSUID: failed to get supplementary groups for user %s: %w", username, err)
-	}
-	gidList := make([]int, len(gids))
-	for i, g := range gids {
-		gidInt, err := strconv.Atoi(g)
-		if err != nil {
-			return fmt.Errorf("dropSUID: invalid GID in supplementary groups for user %s: %w", username, err)
-		}
-		gidList[i] = gidInt
-	}
-
-	// Set supplementary groups
-	if err := syscall.Setgroups(gidList); err != nil {
-		return fmt.Errorf("dropSUID: failed to set supplementary groups: %w", err)
-	}
+	// Skip supplementary groups since they're not needed for our use case
+	logVerbose(verbose, "Skipping supplementary groups for user: %s", username)
 
 	// Set GID
 	if err := syscall.Setgid(gid); err != nil {
@@ -597,13 +503,6 @@ func main() {
 	// Handle signals for graceful shutdown
 	handleSignals(cancel)
 
-	// Determine SUID user.
-	suidUser, err := getSUIDUser(*verbose)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Get current user.
 	currentUser, err := user.Current()
 	if err != nil {
@@ -611,22 +510,24 @@ func main() {
 		os.Exit(1)
 	}
 	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
+	logVerbose(*verbose, "Running with SUID privileges (EUID: %d)", syscall.Geteuid())
 
-	// Elevate to SUID user.
-	if err := elevateSUID(*verbose, suidUser); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Read configuration.
+	// Read configuration while still privileged
 	apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Read API key.
+	// Read API key while still privileged
 	apiKey, err := readAPIKey(*verbose, apiKeyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Read map file contents while still privileged
+	mapFileContent, err := os.ReadFile(mapFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -649,15 +550,29 @@ func main() {
 	}
 	logVerbose(*verbose, "1Password client initialized successfully")
 
+	// Create a temporary file with the map file contents
+	tmpFile, err := os.CreateTemp("", "op-secret-manager-mapfile")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(mapFileContent); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	tmpFile.Close()
+
 	// Process the map file or cleanup files.
 	if *cleanup {
-		if err := cleanupSecretFiles(mapFilePath, currentUser, *verbose); err != nil {
+		if err := cleanupSecretFiles(tmpFile.Name(), currentUser, *verbose); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println("Cleanup completed successfully")
 	} else {
-		if err := processMapFile(ctx, client, mapFilePath, currentUser, *verbose, osFileWriter{}); err != nil {
+		if err := processMapFile(ctx, client, tmpFile.Name(), currentUser, *verbose, osFileWriter{}); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

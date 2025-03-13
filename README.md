@@ -12,7 +12,7 @@ This is a Go program that retrieves secrets from 1Password using the 1Password G
 The program is intended to securely manage and distribute secrets to users on a Linux system. It works as follows:
 
 1. A user (e.g., `postgres`) runs the program.
-2. The program is setuid to another user (`op`) to elevate permissions.
+2. The program is setuid and setgid to another user (`op`) to elevate permissions.
 3. The program reads a service API key from `/mnt/service-1p/api`. This location is set in the configuration file.
 4. It reads a map of secrets and their corresponding file locations from `/mnt/service-1p/mapfile`. This location is set in the configuration file.
 5. The program retrieves each secret that belongs to the user running the program and writes them to the specified file locations in `/run/<uid>/secrets/`.
@@ -176,6 +176,12 @@ To build the program from source, follow these steps:
    go build -o op-secret-manager .
    ```
 
+   or cross-compile if needed:
+
+   ```bash
+   GOOS=linux GOARCH=amd64 go build -o op-secret-manager
+   ```
+
 4. **Set Permissions** (if needed):
    ```bash
    sudo chown service-1p:service-1p op-secret-manager
@@ -184,9 +190,8 @@ To build the program from source, follow these steps:
 
 ---
 
-## **Pushing New Releases**
-
-To create a new release:
+## **Production Releases**
+To create a new production release:
 
 1. **Tag a Release**:
    ```bash
@@ -220,7 +225,7 @@ go test -v ./...
 
 ### **GitHub Actions Testing**
 
-The test suite includes integration tests that require 1Password credentials. To configure GitHub Actions:
+Tests run on every push to any branch and on pull requests, ensuring continuous validation of code changes. The test suite includes integration tests that require 1Password credentials. To configure GitHub Actions:
 
 1. In your GitHub repository, go to Settings > Secrets and variables > Actions
 2. Add the following secrets:

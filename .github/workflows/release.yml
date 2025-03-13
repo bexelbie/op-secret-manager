@@ -3,7 +3,9 @@ name: Release
 on:
   push:
     tags:
-      - "v*" # Trigger on tags like v1.0.0, v2.1.0, etc.
+      - "v*"
+    branches:
+      - main # Only trigger on v* tags when pushed to main branch
   workflow_dispatch:
 
 env:
@@ -15,7 +17,11 @@ permissions:
   packages: read  # Optional, only needed if you're accessing packages
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

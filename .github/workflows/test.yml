@@ -3,11 +3,12 @@ name: Test 1Password Secrets
 on:
   push:
     branches:
-      - main
+      - '**' # Run on any branch push
   pull_request:
     branches:
-      - main
+      - '**' # Run on PRs from any branch
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   test:
