@@ -132,6 +132,10 @@ func readConfig(configFilePath string) (string, string, error) {
 		logVerbose("Config entry: %s = %s", key, value)
 	}
 
+	if err := scanner.Err(); err != nil {
+		return "", "", fmt.Errorf("readConfig: error reading config file: %w", err)
+	}
+
 	apiKeyPath, ok := config["API_KEY_PATH"]
 	if !ok {
 		return "", "", fmt.Errorf("readConfig: API_KEY_PATH not found in config file")
@@ -224,8 +228,7 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 		line := scanner.Text()
 		parts := strings.Split(line, "\t")
 		if len(parts) != 3 {
-			fmt.Fprintf(os.Stderr, "Invalid map file entry: %s\n", line)
-			continue
+			return fmt.Errorf("processMapFile: invalid map file entry at line %d: %s", lineNumber, line)
 		}
 		username := parts[0]
 		secretRef := parts[1]
@@ -243,35 +246,30 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 		logVerbose("Resolving secret: %s", secretRef)
 		secret, err := client.Secrets().Resolve(ctx, secretRef)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to resolve secret %s: %v\n", secretRef, err)
-			continue
+			return fmt.Errorf("processMapFile: failed to resolve secret %s: %w", secretRef, err)
 		}
 		logVerbose("Secret resolved successfully: %s", secretRef)
 
 		dir := filepath.Dir(filePath)
 		logVerbose("Creating directory: %s", dir)
 		if err := FileWriter.MkdirAll(dir, 0700); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create directory %s: %v\n", dir, err)
-			continue
+			return fmt.Errorf("processMapFile: failed to create directory %s: %w", dir, err)
 		}
 
 		logVerbose("Writing secret to file: %s", filePath)
 		if err := FileWriter.WriteFile(filePath, []byte(secret), 0600); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to write secret to %s: %v\n", filePath, err)
-			continue
+			return fmt.Errorf("processMapFile: failed to write secret to %s: %w", filePath, err)
 		}
 
 		uid, _ := strconv.Atoi(currentUser.Uid)
 		gid, _ := strconv.Atoi(currentUser.Gid)
 		logVerbose("Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
 		if err := FileWriter.Chown(filePath, uid, gid); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to change ownership of file %s: %v\n", filePath, err)
-			continue
+			return fmt.Errorf("processMapFile: failed to change ownership of file %s: %w", filePath, err)
 		}
 		logVerbose("Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
 		if err := FileWriter.Chown(dir, uid, gid); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to change ownership of directory %s: %v\n", dir, err)
-			continue
+			return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
 		}
 
 		fmt.Printf("Successfully wrote secret to %s\n", filePath)
@@ -293,42 +291,42 @@ func main() {
 	// Determine SUID user.
 	suidUser, err := getSUIDUser()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to determine SUID user: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Get current user.
 	currentUser, err := user.Current()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get current user: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 	logVerbose("Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
 
 	// Elevate to SUID user.
 	if err := elevateSUID(suidUser); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to switch to SUID user: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Read configuration.
 	apiKeyPath, mapFilePath, err := readConfig(configFilePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to read config file: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	logVerbose("Reading API key from: %s", apiKeyPath)
 	apiKey, err := os.ReadFile(apiKeyPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to read API key: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Drop SUID privileges.
 	if err := dropSUID(currentUser.Username); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to drop SUID privileges: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Initialize 1Password client.
@@ -342,16 +340,15 @@ func main() {
 		onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create 1Password client: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 	logVerbose("1Password client initialized successfully")
 
 	// Wrap the client in an adapter and process the map file.
 	adapter := &onePasswordClientAdapter{client: client}
 	if err := processMapFile(ctx, adapter, mapFilePath, currentUser); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to process map file: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
-
