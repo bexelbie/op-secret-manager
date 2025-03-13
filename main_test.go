@@ -639,6 +639,71 @@ otheruser	op://vault/item/field3	%s`,
 	}
 }
 
+// TestVerifyPermissionsAndOwnership tests the verifyPermissionsAndOwnership function.
+func TestVerifyPermissionsAndOwnership(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("Failed to get current user: %v", err)
+	}
+
+	// Create a temporary directory for the test
+	tmpDir := t.TempDir()
+
+	t.Run("correct permissions and ownership", func(t *testing.T) {
+		// Create a test file with correct permissions and ownership
+		testFile := filepath.Join(tmpDir, "correct.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Verify should succeed
+		err := verifyPermissionsAndOwnership(testFile, 0600, currentUser, false, osFileWriter{})
+		if err != nil {
+			t.Errorf("Expected no error for correct permissions and ownership, got: %v", err)
+		}
+	})
+
+	t.Run("incorrect permissions", func(t *testing.T) {
+		// Create a test file with incorrect permissions
+		testFile := filepath.Join(tmpDir, "incorrect_perms.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Verify should fail
+		err := verifyPermissionsAndOwnership(testFile, 0600, currentUser, false, osFileWriter{})
+		if err == nil {
+			t.Error("Expected error for incorrect permissions, got nil")
+		} else if !strings.Contains(err.Error(), "incorrect permissions") {
+			t.Errorf("Expected error about incorrect permissions, got: %v", err)
+		}
+	})
+
+	t.Run("incorrect ownership", func(t *testing.T) {
+		// Create a test file with correct permissions
+		testFile := filepath.Join(tmpDir, "incorrect_owner.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Change ownership to root (if possible)
+		if os.Geteuid() == 0 {
+			t.Skip("Cannot test incorrect ownership when running as root")
+		}
+
+		// Verify should fail
+		err := verifyPermissionsAndOwnership(testFile, 0600, &user.User{
+			Uid: "0",
+			Gid: "0",
+		}, false, osFileWriter{})
+		if err == nil {
+			t.Error("Expected error for incorrect ownership, got nil")
+		} else if !strings.Contains(err.Error(), "incorrect ownership") {
+			t.Errorf("Expected error about incorrect ownership, got: %v", err)
+		}
+	})
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
