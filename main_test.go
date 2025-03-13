@@ -239,6 +239,67 @@ MAP_FILE_PATH=/path/to/map/file`
 }
 
 
+// TestReadAPIKey tests the readAPIKey function.
+func TestReadAPIKey(t *testing.T) {
+	t.Run("valid API key file", func(t *testing.T) {
+		// Create a temporary file with a valid API key
+		tmpFile, err := os.CreateTemp("", "testapikey")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		apiKeyContent := "test-api-key-123"
+		_, err = tmpFile.WriteString(apiKeyContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tmpFile.Close()
+
+		key, err := readAPIKey(false, tmpFile.Name())
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		if key != apiKeyContent {
+			t.Errorf("Expected API key %q, got %q", apiKeyContent, key)
+		}
+	})
+
+	t.Run("non-existent file", func(t *testing.T) {
+		_, err := readAPIKey(false, "/non/existent/file")
+		if err == nil {
+			t.Fatal("Expected error for non-existent file, got nil")
+		}
+	})
+
+	t.Run("file with incorrect permissions", func(t *testing.T) {
+		// Create a temporary file
+		tmpFile, err := os.CreateTemp("", "testapikey")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		// Write content
+		_, err = tmpFile.WriteString("test-api-key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tmpFile.Close()
+
+		// Change permissions to make it unreadable
+		err = os.Chmod(tmpFile.Name(), 0222) // Write-only permissions
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = readAPIKey(false, tmpFile.Name())
+		if err == nil {
+			t.Fatal("Expected error for unreadable file, got nil")
+		}
+	})
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
