@@ -9,9 +9,9 @@ This is a Go program that retrieves secrets from 1Password using the 1Password G
 
 ## **Problem Statement**
 
-Organizations using 1Password often face challenges distributing secrets to applications and users on multi-user Linux systems. Existing solutions either require:
+Distributing secrets to applications and users on multi-user Linux systems is a challenging problem.  Not because it isn't solved, but because the existing solutions require making a choice from:
 
-- **Manual secret retrieval** using the 1Password CLI (`op`), which doesn't scale for automated deployments
+- **Manual secret retrieval** using a tool like the 1Password CLI (`op`) or literally manually copying secrets around
 - **Running persistent services** like 1Password Connect, which adds infrastructure complexity
 - **Cloud provider integrations** (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault), which aren't suitable for on-premise or hybrid environments
 - **Full secret management software** like HashiCorp Vault, which may be overkill for simpler use cases
@@ -40,7 +40,7 @@ The program is intended to securely manage and distribute secrets to users on a 
 3. The program reads the 1Password service API key from `/etc/op-secret-manager/api`.
 4. It reads a map of secrets and their corresponding file locations from `/etc/op-secret-manager/mapfile`.
 5. The program **immediately drops privileges** back to the real user.
-6. The program retrieves each secret that belongs to the user running the program and writes them to the specified file locations in `/run/<uid>/secrets/`.
+6. The program retrieves each secret that belongs to the user running the program and writes them to the specified file locations under `/run/user/<uid>/secrets/`.
 
 **Key principle**: Configuration files are read with elevated privileges, but all network operations and secret file writes happen with the user's own permissions.
 
@@ -57,11 +57,7 @@ The program uses a **SUID-to-service-account** design (NOT SUID-to-root) to sepa
 
 #### **Why SUID to Service Account, Not Root?**
 
-This design protects the 1Password API key without granting root access:
-
-- **API Key Protection**: The API key must be readable only by the `op` service account. Making it world-readable would expose it to all users. Using file groups would require adding every user to a shared group, defeating access control.
-  
-- **Minimal Privilege**: If the binary is exploited, an attacker only gains the privileges of the unprivileged `op` service account, not root.
+This design protects the 1Password API key without granting root access.  Additionally, If the binary is exploited, an attacker only gains the privileges of the unprivileged `op` service account, not root.
 
 - **Alternatives Considered**:
   - **Linux capabilities** (`CAP_DAC_READ_SEARCH`): Would require the binary to be owned by root and granted special capabilities. This increases risk compared to an unprivileged service account.
@@ -90,65 +86,15 @@ The program **refuses to run as root** (UID 0):
 
 #### **Threat Model**
 
-This security design mitigates the following threats:
+**Mitigated:** API key exposure, cross-user secret access, directory traversal, file race conditions, environment manipulation, privilege escalation via SUID, root misuse.
 
-**Mitigated Threats:**
-- **API key exposure**: Unprivileged users cannot read the API key directly
-- **Cross-user secret access**: Users cannot access secrets mapped to other users
-- **Directory traversal**: Path validation prevents writing outside designated directories
-- **File race conditions**: Atomic writes prevent corruption from crashes or concurrent writes
-- **Environment manipulation**: Dangerous environment variables (e.g., `LD_PRELOAD`, `GOCOVERDIR`) are cleared on startup
-- **Privilege escalation via SUID**: Binary is SUID to unprivileged service account, not root
-- **Root misuse**: Program refuses to run as root
-
-**NOT Mitigated:**
-- **Compromised service account**: If the `op` service account is compromised, the API key is exposed
-- **Compromised API key**: If the API key leaks, all secrets accessible to the service account are at risk
-- **Malicious administrator**: The admin who sets up the system has full control over all components
-- **Map file tampering by admin**: Administrator can modify the map file to redirect any user's secrets
-- **1Password service account over-scoping**: If the service account has access to more vaults than necessary, a compromised API key exposes unrelated secrets
+**NOT Mitigated:** Compromised service account or API key, malicious administrator, 1Password service account over-scoping.
 
 #### **1Password Service Account Scoping**
 
-**The shared API key is the primary security boundary.** Administrators must follow these best practices:
+**Critical:** The shared API key is the primary security boundary. A compromised API key exposes ALL secrets the service account can access.
 
-1. **Principle of Least Privilege**: Grant the service account access ONLY to vaults and items that will be distributed via this program.
-
-2. **Vault Isolation**: Create separate vaults for secrets managed by this system. Don't grant access to vaults containing unrelated secrets.
-
-3. **Regular Audits**: Periodically review what secrets the service account can access and remove unnecessary permissions.
-
-4. **Token Rotation**: Rotate the service account token regularly (e.g., every 90 days).
-
-5. **Monitor Access**: Use 1Password's audit logs to monitor service account usage for anomalies.
-
-**Warning**: A compromised API key exposes ALL secrets the service account can access, regardless of which secrets are in the map file. Over-scoping the service account multiplies the impact of a security breach.
-
-#### **Security Implications**
-
-**Service Account Setup:**
-- The `op` service account must be unprivileged (not root, no special groups)
-- Only `op` should have read access to `/etc/op-secret-manager/api` and `/etc/op-secret-manager/mapfile`
-- These configuration files must have restrictive permissions (600) and be owned by `op:op`
-
-**Binary Setup:**
-- Binary must be owned by `op:op` with SUID bit set (`chmod u+s`)
-- Binary should be installed in a root-owned directory (e.g., `/usr/local/bin/`)
-- Regular users must not have write access to the binary
-
-**Secret Output:**
-- Secrets are written to user-specific directories (`/run/<uid>/secrets/`) with 600 permissions
-- Output paths are validated to prevent directory traversal
-- Files are written atomically to prevent corruption
-
-**Environment Sanitization:**
-- On startup, the program clears dangerous environment variables that could be used for attacks:
-  - `GOCOVERDIR`, `GOTRACEBACK`, `GODEBUG`, `GOMAXPROCS`: Could enable code coverage/debugging features
-  - `LD_PRELOAD`, `LD_LIBRARY_PATH`: Could inject malicious shared libraries
-
-**Build Security:**
-- The binary is built with `-ldflags="-s -w"` (strips symbols) and `-trimpath` (removes build paths)
-- This makes reverse engineering harder and prevents leaking build environment details
+**Best practices:** Grant least privilege access, use separate vaults, audit permissions regularly, rotate tokens every 90 days, monitor access logs.
 
 ---
 
@@ -176,83 +122,105 @@ The fields can be separated by any amount of whitespace (spaces or tabs). The fi
 - **Comments**: Lines starting with `#` (after any leading whitespace) are ignored
 - **Blank lines**: Empty lines or lines with only whitespace are ignored
 - **Flexible whitespace**: Use spaces, tabs, or any combination to separate fields
+- **Relative paths**: Paths without a leading `/` are automatically prepended with `/run/user/<uid>/secrets/`
+- **Absolute paths**: Paths starting with `/` are used as-is (must be under `/run/user/<uid>/secrets/` for security)
 
 **Note:** Inline comments (e.g., `# comment` at the end of a data line) are not supported to avoid ambiguity.
 
 #### **Fields**
+
 1. **`<username>`**: The username of the user who should have access to the secret.
 2. **`<secret_reference>`**: The 1Password secret reference in the format `op://<vault>/<item>/<field>`.
-3. **`<file_path>`**: The file path where the secret should be written. This path should be within `/run/<uid>/secrets/`, where `<uid>` is the user ID of the user running the program.
+3. **`<file_path>`**: The file path where the secret should be written. Can be:
+   - **Relative path** (recommended): e.g., `db_password` or `api_keys/stripe` - automatically expanded to `/run/user/<uid>/secrets/<file_path>`
+   - **Absolute path**: e.g., `/run/user/1001/secrets/db_password` - must be under `/run/user/<uid>/secrets/` for the user's UID
 
 #### **Example**
-Here’s an example `mapfile`:
 
-```
-# PostgreSQL secrets
-postgres   op://vault1/item1/field1   /run/1001/secrets/db_password
-postgres   op://vault1/item2/field2   /run/1001/secrets/api_key
+Here's an example `mapfile` using **relative paths (recommended)**:
+
+```text
+# PostgreSQL secrets - using relative paths
+postgres   op://vault1/item1/field1   db_password
+postgres   op://vault1/item2/field2   api_key
+postgres   op://vault1/item3/field3   config/connection_string
 
 # Redis secrets
-redis      op://vault1/redis/auth     /run/1002/secrets/redis_password
+redis      op://vault1/redis/auth     redis_password
 ```
 
+This is equivalent to:
+
+```text
+# PostgreSQL secrets - using absolute paths
+postgres   op://vault1/item1/field1   /run/user/1001/secrets/db_password
+postgres   op://vault1/item2/field2   /run/user/1001/secrets/api_key
+postgres   op://vault1/item3/field3   /run/user/1001/secrets/config/connection_string
+
+# Redis secrets  
+redis      op://vault1/redis/auth     /run/user/1002/secrets/redis_password
+```
+
+**Recommendation**: Use relative paths for cleaner, more portable mapfiles. Absolute paths are supported for backward compatibility and special cases.
+
 ### **Notes**
+
 - Fields must be separated by whitespace (spaces or tabs)
 - Each line must have exactly 3 fields (username, secret reference, file path)
-- Ensure the file paths are unique and do not conflict with other files
+- **Use relative paths** (e.g., `db_password`) for simpler, more portable mapfiles
+- Absolute paths are validated to ensure they're under `/run/user/<uid>/secrets/` for security
 - The program will only resolve secrets for the user running it, based on their username
 
 ---
 
-### **Secret Directory Scenarios**
+### **Secret Directory Location**
 
-The program writes secrets to user-specific runtime directories. There are two scenarios depending on how your services are configured:
+The program writes secrets **exclusively** to user-specific runtime directories at:
 
-#### **Scenario A: User Services (systemctl --user, podman quadlets)**
-
-For services running in the user context (systemd user services, podman quadlets):
-
-- **Directory**: `/run/user/<uid>/secrets/`
-- **Created by**: systemd automatically when user has active session or lingering enabled
-- **Setup required**: None - the directory exists automatically
-- **Example**: `/run/user/1001/secrets/db_password`
-
-The `secrets/` subdirectory is created automatically by `op-secret-manager` using `MkdirAll`.
-
-#### **Scenario B: System Services Running as a User**
-
-For system services (managed by root systemd) that run as a specific user:
-
-- **Directory**: `/run/<uid>/secrets/` or use systemd's `RuntimeDirectory=`
-- **Created by**: Must be pre-created by administrator
-- **Setup required**: Choose one of these methods:
-
-**Option 1 - Use systemd RuntimeDirectory (recommended):**
-```ini
-[Service]
-User=postgres
-RuntimeDirectory=secrets
-# This creates /run/<uid>/secrets/ automatically
+```text
+/run/user/<uid>/secrets/
 ```
 
-**Option 2 - Use tmpfiles.d:**
-```bash
-# Create /etc/tmpfiles.d/op-secrets-<username>.conf
-echo "d /run/1001/secrets 0700 postgres postgres -" | sudo tee /etc/tmpfiles.d/op-secrets-postgres.conf
-sudo systemd-tmpfiles --create
+This path is **hardcoded** and follows the XDG Base Directory specification (`$XDG_RUNTIME_DIR/secrets`). This standardized location:
+
+- **Is automatically created by systemd** when users have active sessions or lingering enabled
+- **Provides per-user isolation** - each user's secrets are in their own directory
+- **Is automatically cleaned up** when the user logs out (unless lingering is enabled)
+- **Has correct permissions** (0700) set by systemd automatically
+- **Works with systemd user services** and Podman quadlets seamlessly
+
+#### **Requirements**
+
+1. **Systemd user instance must be running**: The user must either:
+   - Have an active login session, OR
+   - Have lingering enabled: `sudo loginctl enable-linger <username>`
+
+2. **Directory creation**: The `secrets/` subdirectory within `/run/user/<uid>/` is created automatically by `op-secret-manager` using `MkdirAll`.
+
+#### **Example Paths**
+
+```text
+# User with UID 1000
+/run/user/1000/secrets/db_password
+/run/user/1000/secrets/api_keys/stripe
+
+# User with UID 1001  
+/run/user/1001/secrets/db_password
 ```
 
-**Important**: `/run/<uid>/` does NOT exist by default for system services. You must use one of the above methods.
+#### **Map File Examples**
 
-#### **Path Examples in Map Files**
+```text
+# Recommended: Use relative paths for cleaner, portable mapfiles
+postgres   op://vault/db/password       db_password
+myuser     op://vault/api/stripe        api_keys/stripe
+myuser     op://vault/db/connection     db_conn
 
+# Absolute paths also work (but relative is preferred)
+postgres   op://vault/db/backup         /run/user/1001/secrets/backup_password
 ```
-# For user services (systemctl --user, quadlets)
-postgres   op://vault/db/password   /run/user/1001/secrets/db_password
 
-# For system services
-postgres   op://vault/db/password   /run/1001/secrets/db_password
-```
+**Security Note**: The program validates all output paths to ensure they are under `/run/user/<uid>/secrets/` for the requesting user. Path traversal attempts (e.g., `..`) are rejected.
 
 ---
 
@@ -260,7 +228,15 @@ postgres   op://vault/db/password   /run/1001/secrets/db_password
 
 Here's a complete example of using `op-secret-manager` with a Podman quadlet to inject secrets into a container:
 
-**File**: `~/.config/containers/systemd/myapp.container`
+**Map file** (`/etc/op-secret-manager/mapfile`):
+
+```text
+# Using relative paths (recommended)
+myuser   op://vault/myapp/db_password   db_password
+myuser   op://vault/myapp/api_key       api_key
+```
+
+**Quadlet file** (`~/.config/containers/systemd/myapp.container`):
 
 ```ini
 [Unit]
@@ -294,9 +270,11 @@ WantedBy=default.target
 ```
 
 **Corresponding map file** (`/etc/op-secret-manager/mapfile`):
-```
-myuser   op://vault/myapp/db_password   /run/user/1001/secrets/db_password
-myuser   op://vault/myapp/api_key       /run/user/1001/secrets/api_key
+
+```text
+# Relative paths are expanded to /run/user/<uid>/secrets/
+myuser   op://vault/myapp/db_password   db_password
+myuser   op://vault/myapp/api_key       api_key
 ```
 
 **Secret Lifecycle**:
@@ -352,6 +330,14 @@ Pre-built binaries are available on the [Releases page](https://github.com/bexel
 
 ### **Setup**
 
+**Security checklist:**
+- Service account `op` must be unprivileged (not root, no special groups)
+- Config files must be mode 600, owned by `op:op`
+- Binary must be owned by `op:op` with SUID bit set in `/usr/local/bin/`
+- Grant 1Password service account least privilege access (separate vaults recommended)
+
+**Steps:**
+
 1. Create the configuration directory:
    ```bash
    sudo mkdir -p /etc/op-secret-manager
@@ -370,14 +356,14 @@ Pre-built binaries are available on the [Releases page](https://github.com/bexel
 3. Create the map file:
    ```bash
    sudo tee /etc/op-secret-manager/mapfile <<EOF
-   postgres    op://vault1/item1/field1    /run/1001/secrets/db_password
-   postgres    op://vault1/item2/field2    /run/1001/secrets/api_key
+   postgres    op://vault1/item1/field1    db_password
+   postgres    op://vault1/item2/field2    api_key
    EOF
    sudo chmod 600 /etc/op-secret-manager/mapfile
    sudo chown op:op /etc/op-secret-manager/mapfile
    ```
    
-   **Important**: Update the map file with your actual secret references and target paths. Replace `op:op` with your actual service account username if different.
+   **Important**: Update the map file with your actual secret references. The paths shown are relative and will be expanded to `/run/user/<uid>/secrets/`. Replace `op:op` with your actual service account username if different.
 
 ### **Usage**
 
@@ -485,16 +471,7 @@ To create a new production release:
 
 2. **Automated Build and Release**:
    - The GitHub Actions workflow (`.github/workflows/release.yml`) will automatically build the binaries and create a release when you push a tag.
-   - Binaries for Linux (AMD64 and ARM64) are built by default.
-
-3. **Re-Enable macOS and Windows Builds**:
-   - To enable macOS and Windows builds, modify the `release.yml` workflow file:
-     ```yaml
-     env:
-       BUILD_MACOS: 'true'    # Enable macOS builds
-       BUILD_WINDOWS: 'true'  # Enable Windows builds
-     ```
-   - Push the changes to the repository, and the next release will include macOS and Windows binaries.
+   - Binaries for Linux (AMD64 and ARM64) are built automatically.
 
 ---
 
@@ -503,6 +480,7 @@ To create a new production release:
 ### **Local Testing**
 
 To run tests locally:
+
 ```bash
 go test -v ./...
 ```
@@ -519,7 +497,8 @@ Tests run on every push to any branch and on pull requests, ensuring continuous 
    - `SECRET_REF_FAIL`: An invalid 1Password secret reference for testing error cases
 
 Example secrets:
-```
+
+```text
 OP_SERVICE_ACCOUNT_TOKEN = op.sa.xxxxxxxxxxxxxxxxxxxxxxxx
 SECRET_REF1 = op://vault1/item1/field1
 SECRET_VAL1 = mysecretvalue
@@ -538,12 +517,14 @@ SECRET_REF_FAIL = op://invalid/vault/item
 ### **Test Configuration**
 
 The test workflow (`.github/workflows/test.yml`) is pre-configured to:
+
 1. Set up Go environment
 2. Run unit tests
 3. Run integration tests (if secrets are configured)
 4. Generate test coverage report
 
 To modify test behavior:
+
 ```yaml
 env:
   RUN_INTEGRATION_TESTS: 'true'  # Set to 'false' to skip integration tests
