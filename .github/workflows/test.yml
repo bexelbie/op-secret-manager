@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.21" # Use the Go version you're developing with
+          go-version: "1.25" # Use the Go version you're developing with
 
       - name: Run tests
         env:

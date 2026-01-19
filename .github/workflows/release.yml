@@ -3,9 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
-    branches:
-      - main # Only trigger on v* tags when pushed to main branch
+      - "v*" # Only trigger on v* tags
   workflow_dispatch:
 
 env:
@@ -30,24 +28,24 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24" # Use the Go version you're developing with
+          go-version: "1.25" # Use the Go version you're developing with
 
       - name: Build for Linux
         run: |
-          GOOS=linux GOARCH=amd64 go build -o op-secret-manager-linux-amd64 .
-          GOOS=linux GOARCH=arm64 go build -o op-secret-manager-linux-arm64 .
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-linux-arm64 .
 
       - name: Build for macOS
         if: ${{ env.BUILD_MACOS == 'true' }} # Only run if BUILD_MACOS is set to 'true'
         run: |
-          GOOS=darwin GOARCH=amd64 go build -o op-secret-manager-darwin-amd64 .
-          GOOS=darwin GOARCH=arm64 go build -o op-secret-manager-darwin-arm64 .
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-darwin-amd64 .
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-darwin-arm64 .
 
       - name: Build for Windows
         if: ${{ env.BUILD_WINDOWS == 'true' }} # Only run if BUILD_WINDOWS is set to 'true'
         run: |
-          GOOS=windows GOARCH=amd64 go build -o op-secret-manager-windows-amd64.exe .
-          GOOS=windows GOARCH=arm64 go build -o op-secret-manager-windows-arm64.exe .
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-windows-amd64.exe .
+          GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-windows-arm64.exe .
 
       - name: Upload Release Assets
         uses: actions/upload-artifact@v4
@@ -74,76 +72,15 @@ jobs:
           path: binaries
 
       - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
+          files: |
+            binaries/op-secret-manager-linux-amd64
+            binaries/op-secret-manager-linux-arm64
+            binaries/op-secret-manager-darwin-amd64
+            binaries/op-secret-manager-darwin-arm64
+            binaries/op-secret-manager-windows-amd64.exe
+            binaries/op-secret-manager-windows-arm64.exe
           draft: false
           prerelease: false
-
-      - name: Upload Release Assets (Linux AMD64)
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: binaries/op-secret-manager-linux-amd64
-          asset_name: op-secret-manager-linux-amd64
-          asset_content_type: application/octet-stream
-
-      - name: Upload Release Assets (Linux ARM64)
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: binaries/op-secret-manager-linux-arm64
-          asset_name: op-secret-manager-linux-arm64
-          asset_content_type: application/octet-stream
-
-      - name: Upload Release Assets (macOS AMD64)
-        if: ${{ env.BUILD_MACOS == 'true' }} # Only run if BUILD_MACOS is set to 'true'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: binaries/op-secret-manager-darwin-amd64
-          asset_name: op-secret-manager-darwin-amd64
-          asset_content_type: application/octet-stream
-
-      - name: Upload Release Assets (macOS ARM64)
-        if: ${{ env.BUILD_MACOS == 'true' }} # Only run if BUILD_MACOS is set to 'true'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: binaries/op-secret-manager-darwin-arm64
-          asset_name: op-secret-manager-darwin-arm64
-          asset_content_type: application/octet-stream
-
-      - name: Upload Release Assets (Windows AMD64)
-        if: ${{ env.BUILD_WINDOWS == 'true' }} # Only run if BUILD_WINDOWS is set to 'true'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: binaries/op-secret-manager-windows-amd64.exe
-          asset_name: op-secret-manager-windows-amd64.exe
-          asset_content_type: application/octet-stream
-
-      - name: Upload Release Assets (Windows ARM64)
-        if: ${{ env.BUILD_WINDOWS == 'true' }} # Only run if BUILD_WINDOWS is set to 'true'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: binaries/op-secret-manager-windows-arm64.exe
-          asset_name: op-secret-manager-windows-arm64.exe
-          asset_content_type: application/octet-stream
+          generate_release_notes: true

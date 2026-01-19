@@ -1,6 +1,6 @@
 module op-secret-manager
 
-go 1.24.0
+go 1.25
 
 require (
 	github.com/1password/onepassword-sdk-go v0.2.0 // indirect
