@@ -73,6 +73,9 @@ type fileWriter interface {
 	// with the specified permissions. Similar to os.MkdirAll but with
 	// consistent permission handling.
 	MkdirAll(path string, perm os.FileMode) error
+
+	// Stat returns file information for testing and verification
+	Stat(path string) (os.FileInfo, error)
 }
 
 // osFileWriter implements fileWriter using the os package.
@@ -84,6 +87,10 @@ func (osFileWriter) WriteFile(filename string, data []byte, perm os.FileMode) er
 
 func (osFileWriter) MkdirAll(path string, perm os.FileMode) error {
 	return os.MkdirAll(path, perm)
+}
+
+func (osFileWriter) Stat(path string) (os.FileInfo, error) {
+	return os.Stat(path)
 }
 
 // atomicWriteFile writes data to a file atomically using a temp file + rename pattern.
@@ -275,6 +282,18 @@ func dropSUID(verbose bool, username string) error {
 	return nil
 }
 
+// resolveSecretPath converts a relative path to an absolute path under /run/user/<uid>/secrets/.
+// Absolute paths are returned as-is. This allows mapfiles to use simple relative paths
+// like "db_password" which will be expanded to "/run/user/<uid>/secrets/db_password".
+func resolveSecretPath(path string, uid string) string {
+	// If path is already absolute, return as-is
+	if filepath.IsAbs(path) {
+		return path
+	}
+	// For relative paths, prepend /run/user/<uid>/secrets/
+	return filepath.Join("/run/user", uid, "secrets", path)
+}
+
 // parseMapFileLine parses a single line from the map file.
 // Returns an error for blank lines, comments, and invalid entries (these should be skipped).
 // Comments are lines that start with # (after trimming whitespace).
@@ -305,7 +324,7 @@ func parseMapFileLine(line string) (username, secretRef, filePath string, err er
 }
 
 // processMapFile processes the map file and writes secrets with proper resource cleanup.
-func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte, currentUser *user.User, verbose bool, fw fileWriter, basePath string) error {
+func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte, currentUser *user.User, verbose bool, fw fileWriter) error {
 	logVerbose(verbose, "Processing map file content")
 	scanner := bufio.NewScanner(strings.NewReader(string(mapFileContent)))
 	lineNumber := 0
@@ -336,8 +355,12 @@ func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte,
 			continue
 		}
 
+		// Resolve relative paths to absolute paths under /run/user/<uid>/secrets/
+		filePath = resolveSecretPath(filePath, currentUser.Uid)
+		logVerbose(verbose, "Resolved file path: %s", filePath)
+
 		// Validate output path before any operations
-		if err := validateOutputPath(filePath, currentUser.Uid, basePath); err != nil {
+		if err := validateOutputPath(filePath, currentUser.Uid); err != nil {
 			return fmt.Errorf("processMapFile: invalid output path at line %d: %w", lineNumber, err)
 		}
 
@@ -394,7 +417,7 @@ func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte,
 
 // verifyPermissionsAndOwnership checks if the file or directory has the expected permissions and ownership.
 func verifyPermissionsAndOwnership(path string, expectedPerm os.FileMode, currentUser *user.User, verbose bool, fw fileWriter) error {
-	info, err := os.Stat(path)
+	info, err := fw.Stat(path)
 	if err != nil {
 		return fmt.Errorf("verifyPermissionsAndOwnership: failed to stat %s: %w", path, err)
 	}
@@ -518,8 +541,8 @@ func checkNotRoot(currentUser *user.User) error {
 }
 
 // validateOutputPath ensures the output path is safe and within the expected directory.
-// It prevents path traversal attacks by validating that the cleaned path is under <basePath>/<uid>/secrets/.
-func validateOutputPath(path string, uid string, basePath string) error {
+// It prevents path traversal attacks by validating that the cleaned path is under /run/user/<uid>/secrets/.
+func validateOutputPath(path string, uid string) error {
 	// Check for .. in the original path (indicates path traversal attempt)
 	if strings.Contains(path, "..") {
 		return fmt.Errorf("validateOutputPath: path traversal attempt detected")
@@ -528,11 +551,11 @@ func validateOutputPath(path string, uid string, basePath string) error {
 	// Clean the path to resolve . and .. components
 	cleanPath := filepath.Clean(path)
 
-	// Expected prefix for the user's secrets directory
-	expectedPrefix := filepath.Join(basePath, uid, "secrets") + string(filepath.Separator)
+	// Expected prefix for the user's secrets directory: /run/user/<uid>/secrets
+	expectedPrefix := filepath.Join("/run/user", uid, "secrets") + string(filepath.Separator)
 
-	// Also allow paths directly under <basePath>/<uid>/secrets without trailing separator
-	expectedPrefixNoSep := filepath.Join(basePath, uid, "secrets")
+	// Also allow paths directly under /run/user/<uid>/secrets without trailing separator
+	expectedPrefixNoSep := filepath.Join("/run/user", uid, "secrets")
 
 	// Check if the path starts with the expected prefix or equals the base directory
 	if !strings.HasPrefix(cleanPath, expectedPrefix) && cleanPath != expectedPrefixNoSep {
@@ -618,7 +641,7 @@ func main() {
 		}
 		fmt.Println("Cleanup completed successfully")
 	} else {
-		if err := processMapFile(ctx, client, mapFileContent, currentUser, *verbose, osFileWriter{}, "/run"); err != nil {
+		if err := processMapFile(ctx, client, mapFileContent, currentUser, *verbose, osFileWriter{}); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

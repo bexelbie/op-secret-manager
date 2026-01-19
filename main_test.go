@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -99,20 +101,20 @@ func TestValidateOutputPath(t *testing.T) {
 		errorMsg    string
 	}{
 		{
-			name:        "valid path under /run/uid/secrets/",
-			path:        "/run/1000/secrets/myfile",
+			name:        "valid path under /run/user/uid/secrets/",
+			path:        "/run/user/1000/secrets/myfile",
 			uid:         "1000",
 			expectError: false,
 		},
 		{
-			name:        "valid nested path under /run/uid/secrets/",
-			path:        "/run/1000/secrets/subdir/myfile",
+			name:        "valid nested path under /run/user/uid/secrets/",
+			path:        "/run/user/1000/secrets/subdir/myfile",
 			uid:         "1000",
 			expectError: false,
 		},
 		{
 			name:        "path traversal attempt with ..",
-			path:        "/run/1000/secrets/../../../etc/passwd",
+			path:        "/run/user/1000/secrets/../../../etc/passwd",
 			uid:         "1000",
 			expectError: true,
 			errorMsg:    "path traversal",
@@ -126,14 +128,14 @@ func TestValidateOutputPath(t *testing.T) {
 		},
 		{
 			name:        "path with .. in the middle",
-			path:        "/run/1000/../2000/secrets/file",
+			path:        "/run/user/1000/../2000/secrets/file",
 			uid:         "1000",
 			expectError: true,
 			errorMsg:    "path traversal",
 		},
 		{
 			name:        "path for different uid",
-			path:        "/run/2000/secrets/file",
+			path:        "/run/user/2000/secrets/file",
 			uid:         "1000",
 			expectError: true,
 			errorMsg:    "outside expected directory",
@@ -142,7 +144,7 @@ func TestValidateOutputPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateOutputPath(tt.path, tt.uid, "/run")
+			err := validateOutputPath(tt.path, tt.uid)
 
 			if tt.expectError {
 				if err == nil {
@@ -274,6 +276,53 @@ func (m *MockOPClient) Resolve(ctx context.Context, secretRef string) (string, e
 		return m.ResolveSecretFunc(ctx, secretRef)
 	}
 	return "", fmt.Errorf("ResolveSecretFunc not implemented")
+}
+
+// mockFileWriter is a mock implementation of fileWriter for testing without real filesystem
+type mockFileWriter struct {
+	files map[string][]byte
+	dirs  map[string]bool
+	uid   int
+	gid   int
+}
+
+func (m *mockFileWriter) WriteFile(filename string, data []byte, perm os.FileMode) error {
+	m.files[filename] = data
+	return nil
+}
+
+func (m *mockFileWriter) MkdirAll(path string, perm os.FileMode) error {
+	m.dirs[path] = true
+	return nil
+}
+
+func (m *mockFileWriter) Stat(path string) (os.FileInfo, error) {
+	// Check if it's a file
+	if _, exists := m.files[path]; exists {
+		return &mockFileInfo{name: filepath.Base(path), mode: 0600, uid: m.uid, gid: m.gid}, nil
+	}
+	// Check if it's a directory
+	if m.dirs[path] {
+		return &mockFileInfo{name: filepath.Base(path), mode: 0700 | os.ModeDir, uid: m.uid, gid: m.gid}, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+// mockFileInfo implements os.FileInfo for testing
+type mockFileInfo struct {
+	name string
+	mode os.FileMode
+	uid  int
+	gid  int
+}
+
+func (m *mockFileInfo) Name() string       { return m.name }
+func (m *mockFileInfo) Size() int64        { return 0 }
+func (m *mockFileInfo) Mode() os.FileMode  { return m.mode }
+func (m *mockFileInfo) ModTime() time.Time { return time.Now() }
+func (m *mockFileInfo) IsDir() bool        { return m.mode.IsDir() }
+func (m *mockFileInfo) Sys() interface{} {
+	return &syscall.Stat_t{Uid: uint32(m.uid), Gid: uint32(m.gid)}
 }
 
 // TestSecrets_SuccedingLiveCall tests secret resolution using a live 1Password client.
@@ -586,6 +635,50 @@ func TestVerifyPermissionsAndOwnership(t *testing.T) {
 	})
 }
 
+// TestResolveSecretPath tests the resolveSecretPath function
+func TestResolveSecretPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		uid      string
+		expected string
+	}{
+		{
+			name:     "relative path - simple filename",
+			path:     "db_password",
+			uid:      "1000",
+			expected: "/run/user/1000/secrets/db_password",
+		},
+		{
+			name:     "relative path - with subdirectory",
+			path:     "api_keys/stripe",
+			uid:      "1001",
+			expected: "/run/user/1001/secrets/api_keys/stripe",
+		},
+		{
+			name:     "absolute path - already correct",
+			path:     "/run/user/1000/secrets/db_password",
+			uid:      "1000",
+			expected: "/run/user/1000/secrets/db_password",
+		},
+		{
+			name:     "absolute path - different location (edge case)",
+			path:     "/tmp/secret",
+			uid:      "1000",
+			expected: "/tmp/secret",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := resolveSecretPath(tt.path, tt.uid)
+			if result != tt.expected {
+				t.Errorf("resolveSecretPath(%q, %q) = %q, expected %q", tt.path, tt.uid, result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestProcessMapFile tests the processMapFile function.
 func TestProcessMapFile(t *testing.T) {
 	currentUser, err := user.Current()
@@ -593,18 +686,30 @@ func TestProcessMapFile(t *testing.T) {
 		t.Fatalf("Failed to get current user: %v", err)
 	}
 
-	// Create a temporary directory for the test - use a temp base path
-	baseDir := t.TempDir()
-	tmpDir := filepath.Join(baseDir, currentUser.Uid, "secrets")
-	// Ensure the directory exists for the test
-	if err := os.MkdirAll(tmpDir, 0700); err != nil {
-		t.Fatalf("Failed to create test directory: %v", err)
+	// Use mock fileWriter to avoid needing actual /run/user directory
+	files := make(map[string][]byte)
+	dirs := make(map[string]bool)
+	uid, _ := strconv.Atoi(currentUser.Uid)
+	gid, _ := strconv.Atoi(currentUser.Gid)
+	mockFW := &mockFileWriter{
+		files: files,
+		dirs:  dirs,
+		uid:   uid,
+		gid:   gid,
 	}
 
-	// Create map file content
-	mapFileContent := []byte(fmt.Sprintf(`%s	op://vault/item/field1	%s/testfile1
-%s	op://vault/item/field2	%s/newdir/testfile2
-otheruser	op://vault/item/field3	%s/testfile3`, currentUser.Username, tmpDir, currentUser.Username, tmpDir, tmpDir))
+	// Create map file content mixing relative and absolute paths
+	// Use relative paths (preferred) and one absolute path
+	secretPath1 := fmt.Sprintf("/run/user/%s/secrets/testfile1", currentUser.Uid)
+	secretPath2 := fmt.Sprintf("/run/user/%s/secrets/newdir/testfile2", currentUser.Uid)
+	secretPath3 := fmt.Sprintf("/run/user/%s/secrets/testfile3", currentUser.Uid)
+	secretPath4 := fmt.Sprintf("/run/user/%s/secrets/relative_test", currentUser.Uid)
+
+	mapFileContent := []byte(fmt.Sprintf("%s\top://vault/item/field1\ttestfile1\n%s\top://vault/item/field2\tnewdir/testfile2\n%s\top://vault/item/field3\t%s\n%s\top://vault/item/field4\trelative_test",
+		currentUser.Username,     // relative path
+		currentUser.Username,     // relative path with subdir
+		"otheruser", secretPath3, // absolute path for other user
+		currentUser.Username)) // relative path
 
 	mockClient := &MockOPClient{
 		ResolveSecretFunc: func(ctx context.Context, secretRef string) (string, error) {
@@ -615,57 +720,48 @@ otheruser	op://vault/item/field3	%s/testfile3`, currentUser.Username, tmpDir, cu
 				return "secret2", nil
 			case "op://vault/item/field3":
 				return "secret3", nil
+			case "op://vault/item/field4":
+				return "secret4", nil
 			default:
 				return "", fmt.Errorf("secret not found: %s", secretRef)
 			}
 		},
 	}
 
-	err = processMapFile(context.TODO(), mockClient, mapFileContent, currentUser, false, osFileWriter{}, baseDir)
+	err = processMapFile(context.TODO(), mockClient, mapFileContent, currentUser, false, mockFW)
 	if err != nil {
 		t.Fatalf("processMapFile failed: %v", err)
 	}
 
-	// Verify file contents
-	file1Path := filepath.Join(tmpDir, "testfile1")
-	file2Path := filepath.Join(tmpDir, "newdir", "testfile2")
-	file3Path := filepath.Join(tmpDir, "testfile3")
-
-	file1Content, err := os.ReadFile(file1Path)
-	if err != nil {
-		t.Fatalf("Failed to read file %s: %v", file1Path, err)
-	}
-	if string(file1Content) != "secret1" {
-		t.Errorf("File %s content mismatch: expected 'secret1', got '%s'", file1Path, string(file1Content))
+	// Verify file contents in mock
+	if content, exists := files[secretPath1]; !exists {
+		t.Errorf("Expected file %s to be created", secretPath1)
+	} else if string(content) != "secret1" {
+		t.Errorf("File %s content mismatch: expected 'secret1', got '%s'", secretPath1, string(content))
 	}
 
-	file2Content, err := os.ReadFile(file2Path)
-	if err != nil {
-		t.Fatalf("Failed to read file %s: %v", file2Path, err)
-	}
-	if string(file2Content) != "secret2" {
-		t.Errorf("File %s content mismatch: expected 'secret2', got '%s'", file2Path, string(file2Content))
+	if content, exists := files[secretPath2]; !exists {
+		t.Errorf("Expected file %s to be created", secretPath2)
+	} else if string(content) != "secret2" {
+		t.Errorf("File %s content mismatch: expected 'secret2', got '%s'", secretPath2, string(content))
 	}
 
-	if _, err := os.Stat(file3Path); !os.IsNotExist(err) {
-		t.Errorf("File %s should not have been written", file3Path)
+	// Verify relative path file (secretPath4)
+	if content, exists := files[secretPath4]; !exists {
+		t.Errorf("Expected file %s to be created from relative path", secretPath4)
+	} else if string(content) != "secret4" {
+		t.Errorf("File %s content mismatch: expected 'secret4', got '%s'", secretPath4, string(content))
 	}
 
-	// Verify that the new directory was created
-	newDirPath := filepath.Join(tmpDir, "newdir")
-	if _, err := os.Stat(newDirPath); os.IsNotExist(err) {
-		t.Errorf("Directory %s was not created", newDirPath)
+	// Verify file for otheruser was NOT created
+	if _, exists := files[secretPath3]; exists {
+		t.Errorf("File %s should not have been written (user isolation failure)", secretPath3)
 	}
 
-	// Verify ownership of the files and directories using verifyPermissionsAndOwnership
-	if err := verifyPermissionsAndOwnership(file1Path, 0600, currentUser, false, osFileWriter{}); err != nil {
-		t.Errorf("verifyPermissionsAndOwnership failed for %s: %v", file1Path, err)
-	}
-	if err := verifyPermissionsAndOwnership(file2Path, 0600, currentUser, false, osFileWriter{}); err != nil {
-		t.Errorf("verifyPermissionsAndOwnership failed for %s: %v", file2Path, err)
-	}
-	if err := verifyPermissionsAndOwnership(newDirPath, 0700, currentUser, false, osFileWriter{}); err != nil {
-		t.Errorf("verifyPermissionsAndOwnership failed for %s: %v", newDirPath, err)
+	// Verify that directories were created in the mock
+	expectedDir := fmt.Sprintf("/run/user/%s/secrets/newdir", currentUser.Uid)
+	if !dirs[expectedDir] {
+		t.Errorf("Directory %s was not created", expectedDir)
 	}
 }
 

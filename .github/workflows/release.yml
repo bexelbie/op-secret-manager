@@ -6,10 +6,6 @@ on:
       - "v*" # Only trigger on v* tags
   workflow_dispatch:
 
-env:
-  BUILD_MACOS: 'false' # Set to 'false' if you don't want to build for macOS
-  BUILD_WINDOWS: 'false' # Set to 'false' if you don't want to build for Windows
-
 permissions:
   contents: write # Required to create a release and upload assets
   packages: read  # Optional, only needed if you're accessing packages
@@ -35,18 +31,6 @@ jobs:
           GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-linux-amd64 .
           GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-linux-arm64 .
 
-      - name: Build for macOS
-        if: ${{ env.BUILD_MACOS == 'true' }} # Only run if BUILD_MACOS is set to 'true'
-        run: |
-          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-darwin-amd64 .
-          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-darwin-arm64 .
-
-      - name: Build for Windows
-        if: ${{ env.BUILD_WINDOWS == 'true' }} # Only run if BUILD_WINDOWS is set to 'true'
-        run: |
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-windows-amd64.exe .
-          GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-windows-arm64.exe .
-
       - name: Upload Release Assets
         uses: actions/upload-artifact@v4
         with:
@@ -54,10 +38,6 @@ jobs:
           path: |
             op-secret-manager-linux-amd64
             op-secret-manager-linux-arm64
-            op-secret-manager-darwin-amd64
-            op-secret-manager-darwin-arm64
-            op-secret-manager-windows-amd64.exe
-            op-secret-manager-windows-arm64.exe
 
   release:
     needs: build
@@ -77,10 +57,6 @@ jobs:
           files: |
             binaries/op-secret-manager-linux-amd64
             binaries/op-secret-manager-linux-arm64
-            binaries/op-secret-manager-darwin-amd64
-            binaries/op-secret-manager-darwin-arm64
-            binaries/op-secret-manager-windows-amd64.exe
-            binaries/op-secret-manager-windows-arm64.exe
           draft: false
           prerelease: false
           generate_release_notes: true
