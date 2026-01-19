@@ -1,3 +1,5 @@
+// ABOUTME: This program retrieves secrets from 1Password using service account credentials
+// ABOUTME: and writes them to user-specific files with proper permissions and ownership
 package main
 
 import (
@@ -18,12 +20,36 @@ import (
 	"github.com/1password/onepassword-sdk-go"
 )
 
+// sanitizeEnvironment clears dangerous environment variables that could be exploited in SUID binaries.
+// This must run before main() to prevent the Go runtime from processing these variables.
+// Addresses CVE-2023-29403 and similar vulnerabilities.
+func sanitizeEnvironment() {
+	dangerousVars := []string{
+		"GOCOVERDIR",      // Coverage directory manipulation
+		"GOTRACEBACK",     // Stack trace control
+		"GODEBUG",         // Runtime debugging flags
+		"GOMAXPROCS",      // Threading behavior control
+		"LD_PRELOAD",      // Library injection
+		"LD_LIBRARY_PATH", // Library path manipulation
+	}
+
+	for _, v := range dangerousVars {
+		os.Unsetenv(v)
+	}
+}
+
+// init runs before main() and clears dangerous environment variables
+func init() {
+	sanitizeEnvironment()
+}
+
 // Configuration constants
 const (
-	// configFilePath is the default location of the configuration file
-	// that contains API key and map file paths. This path is hardcoded
-	// for security reasons to prevent arbitrary file access.
-	configFilePath = "/opt/1Password/op-secret-manager.conf"
+	// defaultAPIKeyPath is the default location of the API key file
+	defaultAPIKeyPath = "/etc/op-secret-manager/api"
+
+	// defaultMapFilePath is the default location of the map file
+	defaultMapFilePath = "/etc/op-secret-manager/mapfile"
 
 	// opTimeout is the default timeout for 1Password operations.
 	// This timeout is used for API calls and file operations to prevent
@@ -38,7 +64,7 @@ const (
 // Implementations must ensure atomic writes where possible and
 // maintain proper file permissions and ownership.
 type fileWriter interface {
-	// WriteFile writes data to a file with specified permissions.
+	// WriteFile writes data to a file with specified permissions atomically.
 	// Implementations should ensure atomic writes to prevent
 	// partial file corruption in case of failures.
 	WriteFile(filename string, data []byte, perm os.FileMode) error
@@ -47,26 +73,65 @@ type fileWriter interface {
 	// with the specified permissions. Similar to os.MkdirAll but with
 	// consistent permission handling.
 	MkdirAll(path string, perm os.FileMode) error
-
-	// Chown changes the ownership of a file or directory.
-	// Implementations must handle both files and directories
-	// and verify ownership changes were successful.
-	Chown(name string, uid, gid int) error
 }
 
 // osFileWriter implements fileWriter using the os package.
 type osFileWriter struct{}
 
 func (osFileWriter) WriteFile(filename string, data []byte, perm os.FileMode) error {
-	return os.WriteFile(filename, data, perm)
+	return atomicWriteFile(filename, data, perm)
 }
 
 func (osFileWriter) MkdirAll(path string, perm os.FileMode) error {
 	return os.MkdirAll(path, perm)
 }
 
-func (osFileWriter) Chown(name string, uid, gid int) error {
-	return os.Chown(name, uid, gid)
+// atomicWriteFile writes data to a file atomically using a temp file + rename pattern.
+// This ensures that if the write fails, no partial file is left at the target path.
+func atomicWriteFile(filename string, data []byte, perm os.FileMode) error {
+	// Create temp file in the same directory as target (required for atomic rename)
+	dir := filepath.Dir(filename)
+	tmpFile, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("atomicWriteFile: failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// Ensure temp file is removed on error
+	defer func() {
+		if tmpFile != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+		}
+	}()
+
+	// Set permissions on temp file before writing
+	if err := tmpFile.Chmod(perm); err != nil {
+		return fmt.Errorf("atomicWriteFile: failed to set permissions on temp file: %w", err)
+	}
+
+	// Write content to temp file
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("atomicWriteFile: failed to write to temp file: %w", err)
+	}
+
+	// Sync to ensure data is written to disk
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("atomicWriteFile: failed to sync temp file: %w", err)
+	}
+
+	// Close the file before rename
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("atomicWriteFile: failed to close temp file: %w", err)
+	}
+	tmpFile = nil // Mark as closed so defer doesn't close again
+
+	// Atomic rename (POSIX guarantees this is atomic)
+	if err := os.Rename(tmpPath, filename); err != nil {
+		return fmt.Errorf("atomicWriteFile: failed to rename temp file: %w", err)
+	}
+
+	return nil
 }
 
 // logVerbose prints verbose log messages.
@@ -130,56 +195,44 @@ func (o *onepasswordSecretsAdapter) Resolve(ctx context.Context, secretRef strin
 	return o.secrets.Resolve(ctx, secretRef)
 }
 
-// readConfig reads the configuration file.
-func readConfig(verbose bool, configFilePath string) (string, string, error) {
-	logVerbose(verbose, "Reading configuration file: %s", configFilePath)
-	file, err := os.Open(configFilePath)
-	if err != nil {
-		return "", "", fmt.Errorf("readConfig: failed to open config file: %w", err)
-	}
-	defer file.Close()
+// resolveConfigPaths resolves the API key and map file paths using the following precedence:
+// 1. Command-line flags (highest priority)
+// 2. Environment variables
+// 3. Default paths (lowest priority)
+func resolveConfigPaths(verbose bool, apiKeyPathFlag, mapFilePathFlag string) (string, string) {
+	// Start with defaults
+	apiKeyPath := defaultAPIKeyPath
+	mapFilePath := defaultMapFilePath
 
-	scanner := bufio.NewScanner(file)
-	config := make(map[string]string)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			return "", "", fmt.Errorf("readConfig: invalid config line: %s", line)
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		config[key] = value
-		logVerbose(verbose, "Config entry: %s = %s", key, value)
+	// Override with environment variables if set
+	if envAPIKey := os.Getenv("OP_API_KEY_PATH"); envAPIKey != "" {
+		logVerbose(verbose, "Overriding API key path with OP_API_KEY_PATH: %s", envAPIKey)
+		apiKeyPath = envAPIKey
+	}
+	if envMapFile := os.Getenv("OP_MAP_FILE_PATH"); envMapFile != "" {
+		logVerbose(verbose, "Overriding map file path with OP_MAP_FILE_PATH: %s", envMapFile)
+		mapFilePath = envMapFile
 	}
 
-	if err := scanner.Err(); err != nil {
-		return "", "", fmt.Errorf("readConfig: error reading config file: %w", err)
+	// Override with command-line flags if provided
+	if apiKeyPathFlag != "" {
+		logVerbose(verbose, "Overriding API key path with command-line flag: %s", apiKeyPathFlag)
+		apiKeyPath = apiKeyPathFlag
+	}
+	if mapFilePathFlag != "" {
+		logVerbose(verbose, "Overriding map file path with command-line flag: %s", mapFilePathFlag)
+		mapFilePath = mapFilePathFlag
 	}
 
-	apiKeyPath, ok := config["API_KEY_PATH"]
-	if !ok {
-		return "", "", fmt.Errorf("readConfig: API_KEY_PATH not found in config file")
-	}
-	mapFilePath, ok := config["MAP_FILE_PATH"]
-	if !ok {
-		return "", "", fmt.Errorf("readConfig: MAP_FILE_PATH not found in config file")
-	}
+	logVerbose(verbose, "Resolved API key path: %s", apiKeyPath)
+	logVerbose(verbose, "Resolved map file path: %s", mapFilePath)
 
-	logVerbose(verbose, "API key path: %s", apiKeyPath)
-	logVerbose(verbose, "Map file path: %s", mapFilePath)
-	return apiKeyPath, mapFilePath, nil
+	return apiKeyPath, mapFilePath
 }
-
 
 // dropSUID drops SUID privileges by switching to the current user.
 // This function is not unit tested due to its reliance on system calls
 // that require root privileges and specific system setup.
-//
-//gocov:ignore
 func dropSUID(verbose bool, username string) error {
 	logVerbose(verbose, "Dropping SUID privileges, switching to user: %s", username)
 	u, err := user.Lookup(username)
@@ -222,16 +275,39 @@ func dropSUID(verbose bool, username string) error {
 	return nil
 }
 
-// processMapFile processes the map file and writes secrets with proper resource cleanup.
-func processMapFile(ctx context.Context, client OPClient, mapFilePath string, currentUser *user.User, verbose bool, fw fileWriter) error {
-	logVerbose(verbose, "Processing map file: %s", mapFilePath)
-	mapFile, err := os.Open(mapFilePath)
-	if err != nil {
-		return fmt.Errorf("processMapFile: failed to open map file: %w", err)
-	}
-	defer mapFile.Close()
+// parseMapFileLine parses a single line from the map file.
+// Returns an error for blank lines, comments, and invalid entries (these should be skipped).
+// Comments are lines that start with # (after trimming whitespace).
+// Valid lines have exactly three whitespace-separated fields: username, secret-reference, file-path.
+func parseMapFileLine(line string) (username, secretRef, filePath string, err error) {
+	// Trim leading/trailing whitespace
+	trimmed := strings.TrimSpace(line)
 
-	scanner := bufio.NewScanner(mapFile)
+	// Skip blank lines
+	if trimmed == "" {
+		return "", "", "", fmt.Errorf("blank line")
+	}
+
+	// Skip comment lines
+	if strings.HasPrefix(trimmed, "#") {
+		return "", "", "", fmt.Errorf("comment line")
+	}
+
+	// Split by any whitespace
+	fields := strings.Fields(trimmed)
+
+	// Must have exactly 3 fields
+	if len(fields) != 3 {
+		return "", "", "", fmt.Errorf("invalid line format: expected 3 fields, got %d", len(fields))
+	}
+
+	return fields[0], fields[1], fields[2], nil
+}
+
+// processMapFile processes the map file and writes secrets with proper resource cleanup.
+func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte, currentUser *user.User, verbose bool, fw fileWriter, basePath string) error {
+	logVerbose(verbose, "Processing map file content")
+	scanner := bufio.NewScanner(strings.NewReader(string(mapFileContent)))
 	lineNumber := 0
 
 	// Track directories and files we create
@@ -241,13 +317,16 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 	for scanner.Scan() {
 		lineNumber++
 		line := scanner.Text()
-		parts := strings.Split(line, "\t")
-		if len(parts) != 3 {
-			return fmt.Errorf("processMapFile: invalid map file entry at line %d: %s", lineNumber, line)
+
+		// Parse the line
+		username, secretRef, filePath, err := parseMapFileLine(line)
+		if err != nil {
+			// Skip blank lines and comments silently
+			if verbose && !strings.Contains(err.Error(), "blank line") && !strings.Contains(err.Error(), "comment line") {
+				logVerbose(verbose, "Skipping line %d: %v", lineNumber, err)
+			}
+			continue
 		}
-		username := parts[0]
-		secretRef := parts[1]
-		filePath := parts[2]
 
 		// Process only entries for the current user.
 		if username != currentUser.Username {
@@ -255,6 +334,11 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 				logVerbose(verbose, "Skipping line %d: not for current user", lineNumber)
 			}
 			continue
+		}
+
+		// Validate output path before any operations
+		if err := validateOutputPath(filePath, currentUser.Uid, basePath); err != nil {
+			return fmt.Errorf("processMapFile: invalid output path at line %d: %w", lineNumber, err)
 		}
 
 		logVerbose(verbose, "Processing entry for user: %s, secret: %s, file: %s", username, secretRef, filePath)
@@ -283,29 +367,17 @@ func processMapFile(ctx context.Context, client OPClient, mapFilePath string, cu
 		}
 		createdFiles[filePath] = true // Track that we created this file
 
-		uid, _ := strconv.Atoi(currentUser.Uid)
-		gid, _ := strconv.Atoi(currentUser.Gid)
-
-		// Verify and set ownership for the file
-		logVerbose(verbose, "Setting ownership of file: %s (UID: %d, GID: %d)", filePath, uid, gid)
-		if err := fw.Chown(filePath, uid, gid); err != nil {
-			return fmt.Errorf("processMapFile: failed to change ownership of file %s: %w", filePath, err)
-		}
-
 		// Verify file ownership and permissions (only if we created it)
+		// Note: After dropSUID, files are automatically owned by the current user
 		if createdFiles[filePath] {
 			if err := verifyPermissionsAndOwnership(filePath, 0600, currentUser, verbose, fw); err != nil {
 				return fmt.Errorf("processMapFile: file %s permission/ownership verification failed: %w", filePath, err)
 			}
 		}
 
-		// Verify and set ownership for the directory (only if we created it)
+		// Verify directory ownership and permissions (only if we created it)
+		// Note: After dropSUID, directories are automatically owned by the current user
 		if createdDirs[dir] {
-			logVerbose(verbose, "Setting ownership of directory: %s (UID: %d, GID: %d)", dir, uid, gid)
-			if err := fw.Chown(dir, uid, gid); err != nil {
-				return fmt.Errorf("processMapFile: failed to change ownership of directory %s: %w", dir, err)
-			}
-
 			if err := verifyPermissionsAndOwnership(dir, 0700, currentUser, verbose, fw); err != nil {
 				return fmt.Errorf("processMapFile: directory %s permission/ownership verification failed: %w", dir, err)
 			}
@@ -347,25 +419,6 @@ func verifyPermissionsAndOwnership(path string, expectedPerm os.FileMode, curren
 	return nil
 }
 
-// verifyOwnership checks if the file or directory has the expected ownership.
-func verifyOwnership(path string, expectedUID, expectedGID int, verbose bool) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("verifyOwnership: failed to stat %s: %w", path, err)
-	}
-
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		if int(stat.Uid) != expectedUID || int(stat.Gid) != expectedGID {
-			return fmt.Errorf("verifyOwnership: %s has incorrect ownership: expected UID %d GID %d, got UID %d GID %d", path, expectedUID, expectedGID, stat.Uid, stat.Gid)
-		}
-	} else {
-		return fmt.Errorf("verifyOwnership: failed to get ownership info for %s", path)
-	}
-
-	logVerbose(verbose, "Verified ownership for %s: UID %d, GID %d", path, expectedUID, expectedGID)
-	return nil
-}
-
 // readAPIKey reads the API key from the specified path.
 func readAPIKey(verbose bool, apiKeyPath string) (string, error) {
 	logVerbose(verbose, "Reading API key from: %s", apiKeyPath)
@@ -374,11 +427,6 @@ func readAPIKey(verbose bool, apiKeyPath string) (string, error) {
 		return "", fmt.Errorf("readAPIKey: failed to read API key: %w", err)
 	}
 	return string(apiKey), nil
-}
-
-// setupContext creates a context with a timeout and cancellation.
-func setupContext(timeout time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), timeout)
 }
 
 // initializeClient initializes the 1Password client with enhanced context handling.
@@ -392,29 +440,6 @@ func initializeClient(ctx context.Context, apiKey string) (OPClient, error) {
 		return nil, fmt.Errorf("initializeClient: failed to create client: %w", err)
 	}
 	return &onePasswordClientAdapter{client: client}, nil
-}
-
-// getTimeoutForOperation returns a timeout duration based on the operation type.
-func getTimeoutForOperation(operation string) time.Duration {
-	switch operation {
-	case "resolveSecret":
-		return 15 * time.Second
-	case "writeFile":
-		return 10 * time.Second
-	case "createDirectory":
-		return 5 * time.Second
-	default:
-		return 10 * time.Second
-	}
-}
-
-// resolveSecretWithTimeout resolves a secret with a specific timeout.
-func resolveSecretWithTimeout(ctx context.Context, client OPClient, secretRef string) (string, error) {
-	timeout := getTimeoutForOperation("resolveSecret")
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	return client.Secrets().Resolve(ctx, secretRef)
 }
 
 // handleSignals sets up signal handling for graceful shutdown.
@@ -438,26 +463,21 @@ func handleSignals(cancel context.CancelFunc) {
 // It reads the map file to identify files created for the current user and safely removes them.
 // Only files are removed; directories are left intact.
 // Returns an error if any file cannot be removed.
-func cleanupSecretFiles(mapFilePath string, currentUser *user.User, verbose bool) error {
-	logVerbose(verbose, "Processing map file for cleanup: %s", mapFilePath)
-	mapFile, err := os.Open(mapFilePath)
-	if err != nil {
-		return fmt.Errorf("cleanupSecretFiles: failed to open map file: %w", err)
-	}
-	defer mapFile.Close()
-
-	scanner := bufio.NewScanner(mapFile)
+func cleanupSecretFiles(mapFileContent []byte, currentUser *user.User, verbose bool) error {
+	logVerbose(verbose, "Processing map file content for cleanup")
+	scanner := bufio.NewScanner(strings.NewReader(string(mapFileContent)))
 	lineNumber := 0
 
 	for scanner.Scan() {
 		lineNumber++
 		line := scanner.Text()
-		parts := strings.Split(line, "\t")
-		if len(parts) != 3 {
-			return fmt.Errorf("cleanupSecretFiles: invalid map file entry at line %d: %s", lineNumber, line)
+
+		// Parse the line
+		username, _, filePath, err := parseMapFileLine(line)
+		if err != nil {
+			// Skip blank lines and comments silently
+			continue
 		}
-		username := parts[0]
-		filePath := parts[2]
 
 		// Process only entries for the current user.
 		if username != currentUser.Username {
@@ -487,17 +507,54 @@ func cleanupSecretFiles(mapFilePath string, currentUser *user.User, verbose bool
 	return nil
 }
 
+// checkNotRoot verifies that the program is not running as root (UID 0).
+// Root can read the API key directly and use the 1Password CLI.
+// Running as root creates unnecessary risk.
+func checkNotRoot(currentUser *user.User) error {
+	if currentUser.Uid == "0" {
+		return fmt.Errorf("op-secret-manager cannot be run as root. Root can read the API key directly and use the 1Password CLI")
+	}
+	return nil
+}
+
+// validateOutputPath ensures the output path is safe and within the expected directory.
+// It prevents path traversal attacks by validating that the cleaned path is under <basePath>/<uid>/secrets/.
+func validateOutputPath(path string, uid string, basePath string) error {
+	// Check for .. in the original path (indicates path traversal attempt)
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("validateOutputPath: path traversal attempt detected")
+	}
+
+	// Clean the path to resolve . and .. components
+	cleanPath := filepath.Clean(path)
+
+	// Expected prefix for the user's secrets directory
+	expectedPrefix := filepath.Join(basePath, uid, "secrets") + string(filepath.Separator)
+
+	// Also allow paths directly under <basePath>/<uid>/secrets without trailing separator
+	expectedPrefixNoSep := filepath.Join(basePath, uid, "secrets")
+
+	// Check if the path starts with the expected prefix or equals the base directory
+	if !strings.HasPrefix(cleanPath, expectedPrefix) && cleanPath != expectedPrefixNoSep {
+		return fmt.Errorf("validateOutputPath: path is outside expected directory")
+	}
+
+	return nil
+}
+
 // main is the entry point of the program with graceful shutdown.
 func main() {
 	verbose := flag.Bool("v", false, "Enable verbose logging")
 	cleanup := flag.Bool("cleanup", false, "Remove files created by the 1Password Secret Manager")
+	apiKeyPath := flag.String("api-key-path", "", "Path to API key file (overrides OP_API_KEY_PATH env var and default)")
+	mapFilePath := flag.String("map-file-path", "", "Path to map file (overrides OP_MAP_FILE_PATH env var and default)")
 	flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
 	flag.Parse()
 
 	logVerbose(*verbose, "Starting program with verbose logging enabled")
 
 	// Set up context with timeout
-	ctx, cancel := setupContext(opTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
 	// Handle signals for graceful shutdown
@@ -509,25 +566,28 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
-	logVerbose(*verbose, "Running with SUID privileges (EUID: %d)", syscall.Geteuid())
 
-	// Read configuration while still privileged
-	apiKeyPath, mapFilePath, err := readConfig(*verbose, configFilePath)
-	if err != nil {
+	// Refuse to run as root
+	if err := checkNotRoot(currentUser); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
+	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
+	logVerbose(*verbose, "Running with SUID privileges (EUID: %d)", syscall.Geteuid())
+
+	// Resolve configuration paths with precedence: CLI flags > env vars > defaults
+	resolvedAPIKeyPath, resolvedMapFilePath := resolveConfigPaths(*verbose, *apiKeyPath, *mapFilePath)
+
 	// Read API key while still privileged
-	apiKey, err := readAPIKey(*verbose, apiKeyPath)
+	apiKey, err := readAPIKey(*verbose, resolvedAPIKeyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Read map file contents while still privileged
-	mapFileContent, err := os.ReadFile(mapFilePath)
+	mapFileContent, err := os.ReadFile(resolvedMapFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -540,7 +600,7 @@ func main() {
 	}
 
 	// Initialize 1Password client.
-	ctx, cancel = setupContext(opTimeout)
+	ctx, cancel = context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
 	client, err := initializeClient(ctx, apiKey)
@@ -550,29 +610,15 @@ func main() {
 	}
 	logVerbose(*verbose, "1Password client initialized successfully")
 
-	// Create a temporary file with the map file contents
-	tmpFile, err := os.CreateTemp("", "op-secret-manager-mapfile")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.Write(mapFileContent); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	tmpFile.Close()
-
 	// Process the map file or cleanup files.
 	if *cleanup {
-		if err := cleanupSecretFiles(tmpFile.Name(), currentUser, *verbose); err != nil {
+		if err := cleanupSecretFiles(mapFileContent, currentUser, *verbose); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println("Cleanup completed successfully")
 	} else {
-		if err := processMapFile(ctx, client, tmpFile.Name(), currentUser, *verbose, osFileWriter{}); err != nil {
+		if err := processMapFile(ctx, client, mapFileContent, currentUser, *verbose, osFileWriter{}, "/run"); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
