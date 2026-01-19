@@ -113,18 +113,23 @@ func TestValidateOutputPath(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "valid path in home directory",
+			path:        "/home/user/.docker/config.json",
+			uid:         "1000",
+			expectError: false,
+		},
+		{
+			name:        "valid path in arbitrary location",
+			path:        "/opt/myapp/secrets/key",
+			uid:         "1000",
+			expectError: false,
+		},
+		{
 			name:        "path traversal attempt with ..",
 			path:        "/run/user/1000/secrets/../../../etc/passwd",
 			uid:         "1000",
 			expectError: true,
 			errorMsg:    "path traversal",
-		},
-		{
-			name:        "path outside expected directory",
-			path:        "/etc/passwd",
-			uid:         "1000",
-			expectError: true,
-			errorMsg:    "outside expected directory",
 		},
 		{
 			name:        "path with .. in the middle",
@@ -134,11 +139,11 @@ func TestValidateOutputPath(t *testing.T) {
 			errorMsg:    "path traversal",
 		},
 		{
-			name:        "path for different uid",
-			path:        "/run/user/2000/secrets/file",
+			name:        "relative path should fail",
+			path:        "relative/path",
 			uid:         "1000",
 			expectError: true,
-			errorMsg:    "outside expected directory",
+			errorMsg:    "must be absolute",
 		},
 	}
 

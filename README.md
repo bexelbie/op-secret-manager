@@ -133,42 +133,49 @@ The fields can be separated by any amount of whitespace (spaces or tabs). The fi
 2. **`<secret_reference>`**: The 1Password secret reference in the format `op://<vault>/<item>/<field>`.
 3. **`<file_path>`**: The file path where the secret should be written. Can be:
    - **Relative path** (recommended): e.g., `db_password` or `api_keys/stripe` - automatically expanded to `/run/user/<uid>/secrets/<file_path>`
-   - **Absolute path**: e.g., `/run/user/1001/secrets/db_password` - must be under `/run/user/<uid>/secrets/` for the user's UID
+   - **Absolute path**: e.g., `/home/postgres/.docker/config.json` or `/run/user/1001/secrets/db_password` - writes anywhere the user has filesystem permissions
 
 #### **Example**
 
 Here's an example `mapfile` using **relative paths (recommended)**:
 
 ```text
-# PostgreSQL secrets - using relative paths
+# PostgreSQL secrets - using relative paths (standard runtime directory)
 postgres   op://vault1/item1/field1   db_password
 postgres   op://vault1/item2/field2   api_key
 postgres   op://vault1/item3/field3   config/connection_string
 
 # Redis secrets
 redis      op://vault1/redis/auth     redis_password
+
+# Docker config - using absolute path to home directory
+myuser     op://vault1/docker/config  /home/myuser/.docker/config.json
 ```
 
-This is equivalent to:
+This expands to:
 
 ```text
-# PostgreSQL secrets - using absolute paths
+# Relative paths → /run/user/<uid>/secrets/
 postgres   op://vault1/item1/field1   /run/user/1001/secrets/db_password
 postgres   op://vault1/item2/field2   /run/user/1001/secrets/api_key
 postgres   op://vault1/item3/field3   /run/user/1001/secrets/config/connection_string
 
-# Redis secrets  
+# Relative paths
 redis      op://vault1/redis/auth     /run/user/1002/secrets/redis_password
+
+# Absolute paths → used as-is (writes anywhere user has permission)
+myuser     op://vault1/docker/config  /home/myuser/.docker/config.json
 ```
 
-**Recommendation**: Use relative paths for cleaner, more portable mapfiles. Absolute paths are supported for backward compatibility and special cases.
+**Recommendation**: Use relative paths for runtime secrets (temporary, session-based). Use absolute paths when secrets must persist in specific locations like config directories.
 
 ### **Notes**
 
 - Fields must be separated by whitespace (spaces or tabs)
 - Each line must have exactly 3 fields (username, secret reference, file path)
-- **Use relative paths** (e.g., `db_password`) for simpler, more portable mapfiles
-- Absolute paths are validated to ensure they're under `/run/user/<uid>/secrets/` for security
+- **Relative paths** are expanded to `/run/user/<uid>/secrets/` (recommended for runtime secrets)
+- **Absolute paths** write anywhere the user has filesystem permissions (for persistent config files)
+- Path traversal (`..`) is blocked for security
 - The program will only resolve secrets for the user running it, based on their username
 
 ---
@@ -211,16 +218,17 @@ This path is **hardcoded** and follows the XDG Base Directory specification (`$X
 #### **Map File Examples**
 
 ```text
-# Recommended: Use relative paths for cleaner, portable mapfiles
+# Relative paths → /run/user/<uid>/secrets/ (recommended for runtime secrets)
 postgres   op://vault/db/password       db_password
 myuser     op://vault/api/stripe        api_keys/stripe
 myuser     op://vault/db/connection     db_conn
 
-# Absolute paths also work (but relative is preferred)
-postgres   op://vault/db/backup         /run/user/1001/secrets/backup_password
+# Absolute paths → write to any location user has permission
+myuser     op://vault/docker/config     /home/myuser/.docker/config.json
+postgres   op://vault/pg/cert           /var/lib/postgresql/.postgresql/client-cert.pem
 ```
 
-**Security Note**: The program validates all output paths to ensure they are under `/run/user/<uid>/secrets/` for the requesting user. Path traversal attempts (e.g., `..`) are rejected.
+**Security Note**: After dropping SUID privileges, the program runs as the real user. OS filesystem permissions enforce access control - you can only write where you have permission. Path traversal attempts (e.g., `..`) are rejected.
 
 ---
 

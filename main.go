@@ -540,26 +540,20 @@ func checkNotRoot(currentUser *user.User) error {
 	return nil
 }
 
-// validateOutputPath ensures the output path is safe and within the expected directory.
-// It prevents path traversal attacks by validating that the cleaned path is under /run/user/<uid>/secrets/.
+// validateOutputPath ensures the output path is safe by preventing path traversal attacks.
+// After dropSUID, the program runs as the real user, so OS filesystem permissions
+// enforce access control. We only need to prevent path traversal attacks (e.g., ..).
+// Absolute paths can write anywhere the user has permission.
+// Relative paths are resolved to /run/user/<uid>/secrets/ before this validation.
 func validateOutputPath(path string, uid string) error {
 	// Check for .. in the original path (indicates path traversal attempt)
 	if strings.Contains(path, "..") {
 		return fmt.Errorf("validateOutputPath: path traversal attempt detected")
 	}
 
-	// Clean the path to resolve . and .. components
-	cleanPath := filepath.Clean(path)
-
-	// Expected prefix for the user's secrets directory: /run/user/<uid>/secrets
-	expectedPrefix := filepath.Join("/run/user", uid, "secrets") + string(filepath.Separator)
-
-	// Also allow paths directly under /run/user/<uid>/secrets without trailing separator
-	expectedPrefixNoSep := filepath.Join("/run/user", uid, "secrets")
-
-	// Check if the path starts with the expected prefix or equals the base directory
-	if !strings.HasPrefix(cleanPath, expectedPrefix) && cleanPath != expectedPrefixNoSep {
-		return fmt.Errorf("validateOutputPath: path is outside expected directory")
+	// Path must be absolute after resolution
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("validateOutputPath: path must be absolute (relative paths should be resolved first)")
 	}
 
 	return nil
