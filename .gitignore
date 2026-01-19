@@ -26,6 +26,3 @@ go.work.sum
 
 # Mac ...
 .DS_Store
-
-# Aider
-.aider*
