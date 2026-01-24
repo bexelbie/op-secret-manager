@@ -457,7 +457,7 @@ func initializeClient(ctx context.Context, apiKey string) (OPClient, error) {
 	client, err := onepassword.NewClient(
 		ctx,
 		onepassword.WithServiceAccountToken(strings.TrimSpace(apiKey)),
-		onepassword.WithIntegrationInfo("Secret Manager", "v1.0.0"),
+		onepassword.WithIntegrationInfo("op-secret-manager", "v1.0.0"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initializeClient: failed to create client: %w", err)
@@ -482,7 +482,7 @@ func handleSignals(cancel context.CancelFunc) {
 	}()
 }
 
-// cleanupSecretFiles removes files that would have been created by the 1Password Secret Manager.
+// cleanupSecretFiles removes files that would have been created by op-secret-manager.
 // It reads the map file to identify files created for the current user and safely removes them.
 // Only files are removed; directories are left intact.
 // Returns an error if any file cannot be removed.
@@ -530,13 +530,42 @@ func cleanupSecretFiles(mapFileContent []byte, currentUser *user.User, verbose b
 	return nil
 }
 
-// checkNotRoot verifies that the program is not running as root (UID 0).
-// Root can read the API key directly and use the 1Password CLI.
-// Running as root creates unnecessary risk.
-func checkNotRoot(currentUser *user.User) error {
-	if currentUser.Uid == "0" {
-		return fmt.Errorf("op-secret-manager cannot be run as root. Root can read the API key directly and use the 1Password CLI")
+// checkRootAllowed verifies that root execution is permitted.
+// Non-root users (UID != 0) are always allowed.
+// Root (UID 0) is only allowed if the mapfile is:
+//   - Owned by root (UID 0)
+//   - Not writable by group or others (no group-write or other-write bits)
+//
+// This prevents an attacker from poisoning the mapfile to make root write
+// secrets to dangerous locations. If an attacker can create a root-owned
+// file with restrictive permissions, they already have root access anyway.
+func checkRootAllowed(currentUser *user.User, mapFilePath string) error {
+	// Non-root users are always allowed
+	if currentUser.Uid != "0" {
+		return nil
 	}
+
+	// Root user - verify mapfile security
+	info, err := os.Stat(mapFilePath)
+	if err != nil {
+		return fmt.Errorf("checkRootAllowed: cannot stat mapfile %s: %w", mapFilePath, err)
+	}
+
+	// Check ownership - must be owned by root (UID 0)
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("checkRootAllowed: cannot determine mapfile ownership")
+	}
+	if stat.Uid != 0 {
+		return fmt.Errorf("checkRootAllowed: mapfile must be owned by root (UID 0) when running as root, but is owned by UID %d", stat.Uid)
+	}
+
+	// Check permissions - must not be group-writable or world-writable
+	perm := info.Mode().Perm()
+	if perm&0022 != 0 {
+		return fmt.Errorf("checkRootAllowed: mapfile must not be writable by group or others when running as root (current mode: %o)", perm)
+	}
+
 	return nil
 }
 
@@ -562,7 +591,7 @@ func validateOutputPath(path string, uid string) error {
 // main is the entry point of the program with graceful shutdown.
 func main() {
 	verbose := flag.Bool("v", false, "Enable verbose logging")
-	cleanup := flag.Bool("cleanup", false, "Remove files created by the 1Password Secret Manager")
+	cleanup := flag.Bool("cleanup", false, "Remove files created by the op-secret-manager")
 	apiKeyPath := flag.String("api-key-path", "", "Path to API key file (overrides OP_API_KEY_PATH env var and default)")
 	mapFilePath := flag.String("map-file-path", "", "Path to map file (overrides OP_MAP_FILE_PATH env var and default)")
 	flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
@@ -584,17 +613,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Refuse to run as root
-	if err := checkNotRoot(currentUser); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
 	logVerbose(*verbose, "Executing user: %s (UID: %s)", currentUser.Username, currentUser.Uid)
 	logVerbose(*verbose, "Running with SUID privileges (EUID: %d)", syscall.Geteuid())
 
 	// Resolve configuration paths with precedence: CLI flags > env vars > defaults
 	resolvedAPIKeyPath, resolvedMapFilePath := resolveConfigPaths(*verbose, *apiKeyPath, *mapFilePath)
+
+	// Check if root execution is allowed (requires secure mapfile)
+	if err := checkRootAllowed(currentUser, resolvedMapFilePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Read API key while still privileged
 	apiKey, err := readAPIKey(*verbose, resolvedAPIKeyPath)

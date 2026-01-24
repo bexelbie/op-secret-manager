@@ -1,4 +1,4 @@
-# 1Password Secret Manager
+# op-secret-manager
 
 [![Go](https://github.com/bexelbie/op-secret-manager/actions/workflows/test.yml/badge.svg)](https://github.com/bexelbie/op-secret-manager/actions/workflows/test.yml)
 [![Release](https://github.com/bexelbie/op-secret-manager/actions/workflows/release.yml/badge.svg)](https://github.com/bexelbie/op-secret-manager/actions/workflows/release.yml)
@@ -75,18 +75,29 @@ The program enforces strict user boundaries:
 - Output paths are validated to prevent directory traversal attacks
 - The map file controls which users can access which secrets
 
-#### **Root Execution Prevention**
+#### **Root Execution**
 
-The program **refuses to run as root** (UID 0):
+The program **allows root execution** (UID 0) only when the mapfile meets strict security requirements:
 
-- Root has direct access to the API key file and can use the 1Password CLI directly
-- There is no legitimate use case for privilege-separated secret delivery to root
-- Running as root would bypass the security model's privilege separation
-- If executed as root, the program exits immediately with an error
+- The mapfile must be **owned by root** (UID 0)
+- The mapfile must **not be writable by group or others** (mode must not have bits 0022 set)
+
+This prevents an attacker from poisoning the mapfile to make root write secrets to dangerous locations. If an attacker can create a root-owned, properly-permissioned file, they already have root access and don't need this tool.
+
+**Rationale**: While root can read the API key directly and use the 1Password CLI, requiring manual secret pulls for root is operationally painful. The mapfile ownership check provides a reasonable security boundary - root is essentially authorizing itself by ensuring the mapfile is properly secured.
+
+**Example secure setup for root:**
+
+```bash
+# Create mapfile with root ownership and secure permissions
+sudo touch /etc/op-secret-manager/mapfile
+sudo chmod 644 /etc/op-secret-manager/mapfile  # rw-r--r-- is fine
+sudo chown root:root /etc/op-secret-manager/mapfile
+```
 
 #### **Threat Model**
 
-**Mitigated:** API key exposure, cross-user secret access, directory traversal, file race conditions, environment manipulation, privilege escalation via SUID, root misuse.
+**Mitigated:** API key exposure, cross-user secret access, directory traversal, file race conditions, environment manipulation, privilege escalation via SUID, mapfile poisoning (for root execution).
 
 **NOT Mitigated:** Compromised service account or API key, malicious administrator, 1Password service account over-scoping.
 

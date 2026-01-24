@@ -1,4 +1,4 @@
-// ABOUTME: This file contains comprehensive unit and integration tests for the 1Password secret manager
+// ABOUTME: This file contains comprehensive unit and integration tests for the op-secret-manager
 // ABOUTME: including tests for secret resolution, file operations, permission handling, and configuration parsing
 package main
 
@@ -61,34 +61,90 @@ func TestEnvironmentSanitization(t *testing.T) {
 	}
 }
 
-// TestCheckNotRoot tests the root execution prevention
-func TestCheckNotRoot(t *testing.T) {
-	t.Run("running as root should return error", func(t *testing.T) {
-		rootUser := &user.User{
-			Uid:      "0",
-			Gid:      "0",
-			Username: "root",
-		}
-		err := checkNotRoot(rootUser)
-		if err == nil {
-			t.Error("Expected error when running as root, got nil")
-		}
-		if !strings.Contains(err.Error(), "cannot be run as root") {
-			t.Errorf("Expected error message about running as root, got: %v", err)
-		}
-	})
-
-	t.Run("running as non-root should succeed", func(t *testing.T) {
+// TestCheckRootAllowed tests root execution with mapfile validation
+func TestCheckRootAllowed(t *testing.T) {
+	t.Run("non-root user should always be allowed", func(t *testing.T) {
 		nonRootUser := &user.User{
 			Uid:      "1000",
 			Gid:      "1000",
 			Username: "testuser",
 		}
-		err := checkNotRoot(nonRootUser)
+		// Mapfile path doesn't matter for non-root - even nonexistent is fine
+		err := checkRootAllowed(nonRootUser, "/nonexistent/path")
 		if err != nil {
 			t.Errorf("Expected no error for non-root user, got: %v", err)
 		}
 	})
+
+	t.Run("root with non-root-owned mapfile should be rejected", func(t *testing.T) {
+		// Create a temp file owned by current user (not root)
+		tmpDir := t.TempDir()
+		mapFile := filepath.Join(tmpDir, "mapfile")
+		if err := os.WriteFile(mapFile, []byte("test"), 0600); err != nil {
+			t.Fatalf("Failed to create test mapfile: %v", err)
+		}
+
+		rootUser := &user.User{
+			Uid:      "0",
+			Gid:      "0",
+			Username: "root",
+		}
+
+		err := checkRootAllowed(rootUser, mapFile)
+		if err == nil {
+			t.Error("Expected error for non-root-owned mapfile")
+		}
+		if !strings.Contains(err.Error(), "owned by root") {
+			t.Errorf("Expected error about root ownership, got: %v", err)
+		}
+	})
+
+	t.Run("root with nonexistent mapfile should return error", func(t *testing.T) {
+		rootUser := &user.User{
+			Uid:      "0",
+			Gid:      "0",
+			Username: "root",
+		}
+
+		err := checkRootAllowed(rootUser, "/nonexistent/mapfile")
+		if err == nil {
+			t.Error("Expected error for nonexistent mapfile")
+		}
+		if !strings.Contains(err.Error(), "cannot stat") {
+			t.Errorf("Expected error about stat failure, got: %v", err)
+		}
+	})
+}
+
+// TestCheckRootAllowedPermissions tests the permission check logic directly.
+// Since we can't create root-owned files in normal tests, we test the
+// permission bit logic in isolation.
+func TestCheckRootAllowedPermissions(t *testing.T) {
+	// Test the permission bit mask logic: perm & 0022 != 0 means group or other writable
+	tests := []struct {
+		name       string
+		perm       os.FileMode
+		shouldFail bool
+	}{
+		{"0600 - owner only", 0600, false},
+		{"0644 - owner rw, group/other r", 0644, false},
+		{"0640 - owner rw, group r", 0640, false},
+		{"0664 - group writable", 0664, true},
+		{"0646 - other writable", 0646, true},
+		{"0666 - both writable", 0666, true},
+		{"0620 - group write only", 0620, true},
+		{"0602 - other write only", 0602, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hasGroupOrOtherWrite := tt.perm&0022 != 0
+			if hasGroupOrOtherWrite != tt.shouldFail {
+				t.Errorf("Permission %o: expected shouldFail=%v but got hasGroupOrOtherWrite=%v",
+					tt.perm, tt.shouldFail, hasGroupOrOtherWrite)
+			}
+		})
+	}
 }
 
 // TestValidateOutputPath tests the validateOutputPath function
@@ -347,7 +403,7 @@ func TestSecrets_SuccedingLiveCall(t *testing.T) {
 	client, err := onepassword.NewClient(
 		context.TODO(),
 		onepassword.WithServiceAccountToken(apiKey),
-		onepassword.WithIntegrationInfo("Secret Manager Tests", "v1.0.0"),
+		onepassword.WithIntegrationInfo("op-secret-manager-tests", "v1.0.0"),
 	)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
@@ -389,7 +445,7 @@ func TestSecrets_FailingLiveCall(t *testing.T) {
 	client, err := onepassword.NewClient(
 		context.TODO(),
 		onepassword.WithServiceAccountToken(apiKey),
-		onepassword.WithIntegrationInfo("Secret Manager Tests", "v1.0.0"),
+		onepassword.WithIntegrationInfo("op-secret-manager-tests", "v1.0.0"),
 	)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)

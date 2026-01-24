@@ -96,7 +96,7 @@ implementation)
 - Secrets MUST be segregated into a dedicated secrets file in the root directory.
 - This secrets file MUST be included in `.gitignore`.
 - YOU MUST flag to bex whenever you are creating or modifying a secrets file.
-- YOU MUST architect code to be agnostic of the secret storage mechanism. Plan for secrets to move from local files to services like 1Password Secret Manager or cloud-based providers.
+- YOU MUST architect code to be agnostic of the secret storage mechanism. Plan for secrets to move from local files to services like op-secret-manager or cloud-based providers.
 
 
 ## Test Driven Development (TDD)
