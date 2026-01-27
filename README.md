@@ -50,9 +50,9 @@ The program uses a **SUID-to-service-account** design (NOT SUID-to-root) to sepa
 
 #### **Privilege Separation Flow**
 
-1. **Initial State**: Binary is SUID to `op` service account (an unprivileged user)
-2. **Configuration Read** (elevated): Reads API key and map file from protected locations only accessible to `op`
-3. **Privilege Drop**: Immediately drops SUID privileges to the real user (caller's UID/GID)
+1. **Initial State**: Binary is SUID+SGID to `op` service account (an unprivileged user)
+2. **Configuration Read** (elevated): Reads API key and map file from protected locations accessible via `op` UID/GID
+3. **Privilege Drop**: Immediately drops SUID and SGID privileges to the real user (caller's UID/GID)
 4. **Secret Operations** (unprivileged): All 1Password API calls and file writes run as the real user
 
 #### **Why SUID to Service Account, Not Root?**
@@ -65,6 +65,26 @@ This design protects the 1Password API key without granting root access.  Additi
   - **SUID root**: Far more dangerous than SUID to an unprivileged account.
 
 The SUID-to-service-account design is the lowest-privilege solution for secure API key access on multi-user systems.
+
+#### **API Key Storage**
+
+The 1Password service account API key is stored in plaintext at `/etc/op-secret-manager/api`. This is an intentional design choice, not an oversight.
+
+**Why plaintext?**
+
+This follows the same security model as `/etc/shadow`, `/etc/ssh/ssh_host_*_key`, and other system secrets on Unix systems. **File permissions ARE the protection mechanism.** The API key file is readable only by the `op` service account (mode 0400 or 0600). Any user who can read this file already has `op` service account privileges and could use the 1Password CLI directly.
+
+**Alternatives considered:**
+
+- **Machine-bound encryption** (TPM, encrypted file systems): The decryption key must be accessible to the same SUID binary. An attacker with code execution in the binary can trigger decryption and capture the plaintext key. This adds complexity without meaningful security improvement.
+- **Password-protected keys**: Incompatible with unattended operation. SUID binaries cannot interactively prompt for passwords.
+- **OS-native keystores** (Keychain, Secret Service): Would require the binary to authenticate to the keystore with credentials accessible to the `op` service account, recreating the same plaintext storage problem with additional complexity.
+
+**The actual security boundary:** The 1Password service account's vault permissions. Limit what this API key can access in 1Password - if the key is compromised, the blast radius is contained to those specific vaults and items.
+
+If an attacker can bypass Unix file permissions (root compromise, kernel exploit), no encryption scheme accessible to a SUID binary would provide protection. The attacker could read the decryption key, intercept the decryption process, or simply dump the binary's memory after it decrypts the key.
+
+File permissions are the Unix-standard mechanism for protecting on-disk secrets. This tool follows that standard.
 
 #### **User Isolation**
 
@@ -86,13 +106,22 @@ This prevents an attacker from poisoning the mapfile to make root write secrets 
 
 **Rationale**: While root can read the API key directly and use the 1Password CLI, requiring manual secret pulls for root is operationally painful. The mapfile ownership check provides a reasonable security boundary - root is essentially authorizing itself by ensuring the mapfile is properly secured.
 
-**Example secure setup for root:**
+**Recommended setup for shared mapfile (root + non-root entries):**
+
+Using SGID allows a single mapfile to serve both root and non-root users:
+- Binary is SUID+SGID to `op:op` (mode 6755)
+- Mapfile is owned by `root:op` with mode 640 (owner read/write, group read)
+- Root reads mapfile as owner, non-root users read via SGID group membership
 
 ```bash
-# Create mapfile with root ownership and secure permissions
+# Set binary with SUID+SGID
+sudo chown op:op /usr/local/bin/op-secret-manager
+sudo chmod 6755 /usr/local/bin/op-secret-manager  # SUID + SGID
+
+# Create mapfile with root ownership, group op readable
 sudo touch /etc/op-secret-manager/mapfile
-sudo chmod 644 /etc/op-secret-manager/mapfile  # rw-r--r-- is fine
-sudo chown root:root /etc/op-secret-manager/mapfile
+sudo chown root:op /etc/op-secret-manager/mapfile
+sudo chmod 640 /etc/op-secret-manager/mapfile  # rw-r-----
 ```
 
 #### **Threat Model**
@@ -342,8 +371,10 @@ Pre-built binaries are available on the [Releases page](https://github.com/bexel
 3. Set ownership and permissions:
    ```bash
    sudo chown op:op /usr/local/bin/op-secret-manager
-   sudo chmod u+s /usr/local/bin/op-secret-manager
+   sudo chmod 6755 /usr/local/bin/op-secret-manager  # SUID + SGID
    ```
+   
+   **Note**: Mode `6755` sets both SUID and SGID bits, allowing the binary to run with `op` user and group privileges. This enables reading a shared mapfile owned by `root:op` with mode `640`, supporting both root and non-root users with a single mapfile.
    
    **Important**: Replace `op:op` with your actual service account username if different.
 
@@ -351,8 +382,9 @@ Pre-built binaries are available on the [Releases page](https://github.com/bexel
 
 **Security checklist:**
 - Service account `op` must be unprivileged (not root, no special groups)
-- Config files must be mode 600, owned by `op:op`
-- Binary must be owned by `op:op` with SUID bit set in `/usr/local/bin/`
+- API key file must be mode 600, owned by `op:op`
+- Binary must be owned by `op:op` with SUID+SGID bits set (mode 6755) in `/usr/local/bin/`
+- Mapfile should be owned by `root:op` with mode 640 for shared use (both root and non-root entries)
 - Grant 1Password service account least privilege access (separate vaults recommended)
 
 **Steps:**
@@ -375,14 +407,23 @@ Pre-built binaries are available on the [Releases page](https://github.com/bexel
 3. Create the map file:
    ```bash
    sudo tee /etc/op-secret-manager/mapfile <<EOF
-   postgres    op://vault1/item1/field1    db_password
-   postgres    op://vault1/item2/field2    api_key
+   # Root user entries
+   root        op://vault1/rootdb/password    db_password
+   
+   # Non-root user entries
+   postgres    op://vault1/item1/field1       db_password
+   postgres    op://vault1/item2/field2       api_key
    EOF
-   sudo chmod 600 /etc/op-secret-manager/mapfile
-   sudo chown op:op /etc/op-secret-manager/mapfile
+   sudo chmod 640 /etc/op-secret-manager/mapfile
+   sudo chown root:op /etc/op-secret-manager/mapfile
    ```
    
-   **Important**: Update the map file with your actual secret references. The paths shown are relative and will be expanded to `/run/user/<uid>/secrets/`. Replace `op:op` with your actual service account username if different.
+   **Note**: The recommended setup uses `root:op` ownership with mode `640`. This allows:
+   - Root to read the mapfile as the owner
+   - Non-root users to read via SGID group membership to `op`
+   - A single mapfile to contain entries for both root and non-root users
+   
+   **Important**: Update the map file with your actual secret references. The paths shown are relative and will be expanded to `/run/user/<uid>/secrets/`.
 
 ### **Usage**
 
@@ -472,7 +513,7 @@ To build the program from source, follow these steps:
 4. **Set Permissions** (if needed):
    ```bash
    sudo chown op:op op-secret-manager
-   sudo chmod u+s op-secret-manager
+   sudo chmod 6755 op-secret-manager  # SUID + SGID
    ```
    
    **Important**: Replace `op:op` with your actual service account username if different.
