@@ -152,198 +152,57 @@ These defaults can be overridden using command-line flags or environment variabl
 
 ### **Map File Format**
 
-The `mapfile` is a plain text file that maps secrets from 1Password to specific file locations. Each line in the file represents a single mapping and follows this format:
+The `mapfile` maps 1Password secrets to file locations. Each line follows this format:
 
-```
+```text
 <username>  <secret_reference>  <file_path>
 ```
 
-The fields can be separated by any amount of whitespace (spaces or tabs). The file supports:
-- **Comments**: Lines starting with `#` (after any leading whitespace) are ignored
-- **Blank lines**: Empty lines or lines with only whitespace are ignored
-- **Flexible whitespace**: Use spaces, tabs, or any combination to separate fields
-- **Relative paths**: Paths without a leading `/` are automatically prepended with `/run/user/<uid>/secrets/`
-- **Absolute paths**: Paths starting with `/` are used as-is (must be under `/run/user/<uid>/secrets/` for security)
+#### **Format Rules**
 
-**Note:** Inline comments (e.g., `# comment` at the end of a data line) are not supported to avoid ambiguity.
+- **Fields**: Separate with whitespace (spaces or tabs). Must have exactly 3 fields per line.
+- **Comments**: Lines starting with `#` (after leading whitespace) are ignored
+- **Blank lines**: Empty lines or whitespace-only lines are ignored
+- **No inline comments**: Comments at the end of data lines are not supported
 
 #### **Fields**
 
-1. **`<username>`**: The username of the user who should have access to the secret.
-2. **`<secret_reference>`**: The 1Password secret reference in the format `op://<vault>/<item>/<field>`.
-3. **`<file_path>`**: The file path where the secret should be written. Can be:
-   - **Relative path** (recommended): e.g., `db_password` or `api_keys/stripe` - automatically expanded to `/run/user/<uid>/secrets/<file_path>`
-   - **Absolute path**: e.g., `/home/postgres/.docker/config.json` or `/run/user/1001/secrets/db_password` - writes anywhere the user has filesystem permissions
+1. **`<username>`**: User who should have access to the secret
+2. **`<secret_reference>`**: 1Password reference in format `op://<vault>/<item>/<field>`
+3. **`<file_path>`**: Where to write the secret:
+   - **Relative path** (recommended): e.g., `db_password` → `/run/user/<uid>/secrets/db_password`
+   - **Absolute path**: e.g., `/home/user/.docker/config.json` (writes anywhere user has permission)
 
-#### **Example**
+#### **Output Directory**
 
-Here's an example `mapfile` using **relative paths (recommended)**:
+Secrets are written to `/run/user/<uid>/secrets/` by default. This follows the XDG Base Directory specification (`$XDG_RUNTIME_DIR/secrets`) and:
 
-```text
-# PostgreSQL secrets - using relative paths (standard runtime directory)
-postgres   op://vault1/item1/field1   db_password
-postgres   op://vault1/item2/field2   api_key
-postgres   op://vault1/item3/field3   config/connection_string
+- Is automatically created by systemd for active sessions or lingering-enabled users
+- Provides per-user isolation (each user has their own directory)
+- Is automatically cleaned up on logout (unless lingering is enabled)
+- Has correct permissions (0700) set by systemd
+- Works seamlessly with systemd user services and Podman quadlets
 
-# Redis secrets
-redis      op://vault1/redis/auth     redis_password
+**Requirements**: User must have an active session or lingering enabled (`sudo loginctl enable-linger <username>`)
 
-# Docker config - using absolute path to home directory
-myuser     op://vault1/docker/config  /home/myuser/.docker/config.json
-```
-
-This expands to:
+#### **Example Map File**
 
 ```text
-# Relative paths → /run/user/<uid>/secrets/
-postgres   op://vault1/item1/field1   /run/user/1001/secrets/db_password
-postgres   op://vault1/item2/field2   /run/user/1001/secrets/api_key
-postgres   op://vault1/item3/field3   /run/user/1001/secrets/config/connection_string
+# PostgreSQL secrets - relative paths (recommended)
+postgres   op://vault/db/password         db_password
+postgres   op://vault/db/connection       db_conn
 
-# Relative paths
-redis      op://vault1/redis/auth     /run/user/1002/secrets/redis_password
+# Redis
+redis      op://vault/redis/auth          redis_password
 
-# Absolute paths → used as-is (writes anywhere user has permission)
-myuser     op://vault1/docker/config  /home/myuser/.docker/config.json
+# Absolute paths - persistent config files
+myuser     op://vault/docker/config       /home/myuser/.docker/config.json
+postgres   op://vault/pg/cert             /var/lib/postgresql/.postgresql/client-cert.pem
 ```
 
-**Recommendation**: Use relative paths for runtime secrets (temporary, session-based). Use absolute paths when secrets must persist in specific locations like config directories.
+**Security**: After privilege drop, the program runs as the real user. Filesystem permissions control access. Path traversal (`..`) is blocked.
 
-### **Notes**
-
-- Fields must be separated by whitespace (spaces or tabs)
-- Each line must have exactly 3 fields (username, secret reference, file path)
-- **Relative paths** are expanded to `/run/user/<uid>/secrets/` (recommended for runtime secrets)
-- **Absolute paths** write anywhere the user has filesystem permissions (for persistent config files)
-- Path traversal (`..`) is blocked for security
-- The program will only resolve secrets for the user running it, based on their username
-
----
-
-### **Secret Directory Location**
-
-The program writes secrets **exclusively** to user-specific runtime directories at:
-
-```text
-/run/user/<uid>/secrets/
-```
-
-This path is **hardcoded** and follows the XDG Base Directory specification (`$XDG_RUNTIME_DIR/secrets`). This standardized location:
-
-- **Is automatically created by systemd** when users have active sessions or lingering enabled
-- **Provides per-user isolation** - each user's secrets are in their own directory
-- **Is automatically cleaned up** when the user logs out (unless lingering is enabled)
-- **Has correct permissions** (0700) set by systemd automatically
-- **Works with systemd user services** and Podman quadlets seamlessly
-
-#### **Requirements**
-
-1. **Systemd user instance must be running**: The user must either:
-   - Have an active login session, OR
-   - Have lingering enabled: `sudo loginctl enable-linger <username>`
-
-2. **Directory creation**: The `secrets/` subdirectory within `/run/user/<uid>/` is created automatically by `op-secret-manager` using `MkdirAll`.
-
-#### **Example Paths**
-
-```text
-# User with UID 1000
-/run/user/1000/secrets/db_password
-/run/user/1000/secrets/api_keys/stripe
-
-# User with UID 1001  
-/run/user/1001/secrets/db_password
-```
-
-#### **Map File Examples**
-
-```text
-# Relative paths → /run/user/<uid>/secrets/ (recommended for runtime secrets)
-postgres   op://vault/db/password       db_password
-myuser     op://vault/api/stripe        api_keys/stripe
-myuser     op://vault/db/connection     db_conn
-
-# Absolute paths → write to any location user has permission
-myuser     op://vault/docker/config     /home/myuser/.docker/config.json
-postgres   op://vault/pg/cert           /var/lib/postgresql/.postgresql/client-cert.pem
-```
-
-**Security Note**: After dropping SUID privileges, the program runs as the real user. OS filesystem permissions enforce access control - you can only write where you have permission. Path traversal attempts (e.g., `..`) are rejected.
-
----
-
-### **Systemd Integration Example (Podman Quadlet)**
-
-Here's a complete example of using `op-secret-manager` with a Podman quadlet to inject secrets into a container:
-
-**Map file** (`/etc/op-secret-manager/mapfile`):
-
-```text
-# Using relative paths (recommended)
-myuser   op://vault/myapp/db_password   db_password
-myuser   op://vault/myapp/api_key       api_key
-```
-
-**Quadlet file** (`~/.config/containers/systemd/myapp.container`):
-
-```ini
-[Unit]
-Description=My Application Container
-After=network-online.target
-Wants=network-online.target
-
-[Container]
-Image=docker.io/myapp:latest
-Network=pasta
-
-# Mount secrets directory into container
-Volume=/run/user/%U/secrets:/run/secrets:ro,Z
-
-# Application reads secrets from environment variables pointing to files
-Environment=DB_PASSWORD_FILE=/run/secrets/db_password
-Environment=API_KEY_FILE=/run/secrets/api_key
-
-# Fetch secrets before starting container
-ExecStartPre=/usr/local/bin/op-secret-manager
-
-# Clean up secrets after container stops
-ExecStopPost=/usr/local/bin/op-secret-manager --cleanup
-
-[Service]
-# Container will auto-restart
-Restart=always
-
-[Install]
-WantedBy=default.target
-```
-
-**Corresponding map file** (`/etc/op-secret-manager/mapfile`):
-
-```text
-# Relative paths are expanded to /run/user/<uid>/secrets/
-myuser   op://vault/myapp/db_password   db_password
-myuser   op://vault/myapp/api_key       api_key
-```
-
-**Secret Lifecycle**:
-1. `ExecStartPre` runs `op-secret-manager` to fetch secrets and write them to `/run/user/1001/secrets/`
-2. Container starts with `/run/user/1001/secrets/` mounted as `/run/secrets/` (read-only)
-3. Application reads `$DB_PASSWORD_FILE` and `$API_KEY_FILE` to get secret paths
-4. When container stops, `ExecStopPost` runs `op-secret-manager --cleanup` to delete secret files
-
-**Enable and start**:
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now myapp.container
-```
-
----
-
-### **Notes**
-- Fields must be separated by whitespace (spaces or tabs)
-- Each line must have exactly 3 fields (username, secret reference, file path)
-- Ensure the file paths are unique and do not conflict with other files
-- The program will only resolve secrets for the user running it, based on their username
+**Integration Examples**: See [EXAMPLES.md](EXAMPLES.md) for complete systemd, Podman quadlet, and Docker Compose examples
 
 ---
 
@@ -483,117 +342,6 @@ cat /run/1001/secrets/api_key
 
 ---
 
-## **Building the Code**
-
-To build the program from source, follow these steps:
-
-1. **Install Go**: Ensure you have Go installed (version 1.21 or later). You can download it from the [official Go website](https://golang.org/dl/).
-
-2. **Clone the Repository**:
-   ```bash
-   git clone https://github.com/bexelbie/op-secret-manager.git
-   cd op-secret-manager
-   ```
-
-3. **Build the Program**:
-   ```bash
-   go build -ldflags="-s -w" -trimpath -o op-secret-manager .
-   ```
-
-   Build flags explanation:
-   - `-ldflags="-s -w"`: Strip symbol table and DWARF debug info (reduces binary size and makes reverse engineering harder)
-   - `-trimpath`: Remove file system paths from the binary (prevents leaking build environment details)
-
-   or cross-compile if needed:
-
-   ```bash
-   GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o op-secret-manager
-   ```
-
-4. **Set Permissions** (if needed):
-   ```bash
-   sudo chown op:op op-secret-manager
-   sudo chmod 6755 op-secret-manager  # SUID + SGID
-   ```
-   
-   **Important**: Replace `op:op` with your actual service account username if different.
-
----
-
-## **Production Releases**
-To create a new production release:
-
-1. **Tag a Release**:
-   ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
-   ```
-
-2. **Automated Build and Release**:
-   - The GitHub Actions workflow (`.github/workflows/release.yml`) will automatically build the binaries and create a release when you push a tag.
-   - Binaries for Linux (AMD64 and ARM64) are built automatically.
-
----
-
-## **Testing**
-
-### **Local Testing**
-
-To run tests locally:
-
-```bash
-go test -v ./...
-```
-
-### **GitHub Actions Testing**
-
-Tests run on every push to any branch and on pull requests, ensuring continuous validation of code changes. The test suite includes integration tests that require 1Password credentials. To configure GitHub Actions:
-
-1. In your GitHub repository, go to Settings > Secrets and variables > Actions
-2. Add the following secrets:
-   - `OP_SERVICE_ACCOUNT_TOKEN`: Your 1Password service account token
-   - `SECRET_REF1`: A valid 1Password secret reference (e.g., `op://vault/item/field`)
-   - `SECRET_VAL1`: The expected value for SECRET_REF1
-   - `SECRET_REF_FAIL`: An invalid 1Password secret reference for testing error cases
-
-Example secrets:
-
-```text
-OP_SERVICE_ACCOUNT_TOKEN = op.sa.xxxxxxxxxxxxxxxxxxxxxxxx
-SECRET_REF1 = op://vault1/item1/field1
-SECRET_VAL1 = mysecretvalue
-SECRET_REF_FAIL = op://invalid/vault/item
-```
-
-### **Security Considerations**
-
-- Never commit secrets to your repository
-- Use GitHub Actions secrets for sensitive data
-- Restrict access to your 1Password service account
-- Use the principle of least privilege for vault access
-- Rotate service account tokens regularly
-- Monitor and audit secret access
-
-### **Test Configuration**
-
-The test workflow (`.github/workflows/test.yml`) is pre-configured to:
-
-1. Set up Go environment
-2. Run unit tests
-3. Run integration tests (if secrets are configured)
-4. Generate test coverage report
-
-To modify test behavior:
-
-```yaml
-env:
-  RUN_INTEGRATION_TESTS: 'true'  # Set to 'false' to skip integration tests
-  TEST_TIMEOUT: '5m'             # Maximum test duration
-  TEST_VERBOSE: 'true'           # Enable verbose test output
-```
-
----
-
 ## **License**
 
 This project is licensed under the GNU General Public License v3.0. See the [LICENSE](LICENSE) file for details.
@@ -602,7 +350,7 @@ This project is licensed under the GNU General Public License v3.0. See the [LIC
 
 ## **Contributing**
 
-Contributions are welcome! Please open an issue or submit a pull request.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on building, testing, and releasing the project.
 
 ---
 
