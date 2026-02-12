@@ -1045,3 +1045,169 @@ func TestParseMapFileLine(t *testing.T) {
 		})
 	}
 }
+
+// TestLockFilePath tests the lockFilePath function.
+func TestLockFilePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		uid      string
+		expected string
+	}{
+		{
+			name:     "typical user",
+			uid:      "1000",
+			expected: "/run/user/1000/op-secret-manager.lock",
+		},
+		{
+			name:     "root user",
+			uid:      "0",
+			expected: "/run/user/0/op-secret-manager.lock",
+		},
+		{
+			name:     "high UID",
+			uid:      "65534",
+			expected: "/run/user/65534/op-secret-manager.lock",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := lockFilePath(tt.uid)
+			if result != tt.expected {
+				t.Errorf("lockFilePath(%q) = %q, expected %q", tt.uid, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestAcquireProcessLock tests basic lock acquisition and release.
+func TestAcquireProcessLock(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockPath := filepath.Join(tmpDir, "test.lock")
+
+	t.Run("lock can be acquired on new file", func(t *testing.T) {
+		lockFile, err := acquireProcessLock(lockPath, false)
+		if err != nil {
+			t.Fatalf("acquireProcessLock failed: %v", err)
+		}
+		if lockFile == nil {
+			t.Fatal("Expected non-nil lock file")
+		}
+		lockFile.Close()
+	})
+
+	t.Run("lock file is created", func(t *testing.T) {
+		lockPath := filepath.Join(tmpDir, "created.lock")
+		lockFile, err := acquireProcessLock(lockPath, false)
+		if err != nil {
+			t.Fatalf("acquireProcessLock failed: %v", err)
+		}
+		defer lockFile.Close()
+
+		if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+			t.Error("Expected lock file to be created on disk")
+		}
+	})
+
+	t.Run("lock can be reacquired after release", func(t *testing.T) {
+		lockPath := filepath.Join(tmpDir, "reacquire.lock")
+
+		// Acquire and release
+		lockFile, err := acquireProcessLock(lockPath, false)
+		if err != nil {
+			t.Fatalf("First acquireProcessLock failed: %v", err)
+		}
+		lockFile.Close()
+
+		// Acquire again
+		lockFile2, err := acquireProcessLock(lockPath, false)
+		if err != nil {
+			t.Fatalf("Second acquireProcessLock failed: %v", err)
+		}
+		defer lockFile2.Close()
+
+		if lockFile2 == nil {
+			t.Fatal("Expected non-nil lock file on reacquire")
+		}
+	})
+
+	t.Run("verbose logging works", func(t *testing.T) {
+		lockPath := filepath.Join(tmpDir, "verbose.lock")
+		output := captureOutput(func() {
+			lockFile, err := acquireProcessLock(lockPath, true)
+			if err != nil {
+				t.Fatalf("acquireProcessLock failed: %v", err)
+			}
+			lockFile.Close()
+		})
+
+		if !strings.Contains(output, "[VERBOSE]") {
+			t.Errorf("Expected verbose output, got: %q", output)
+		}
+	})
+}
+
+// TestAcquireProcessLockSerialization tests that the lock serializes concurrent access.
+func TestAcquireProcessLockSerialization(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockPath := filepath.Join(tmpDir, "serialize.lock")
+
+	// Acquire the lock in the main goroutine
+	lockFile, err := acquireProcessLock(lockPath, false)
+	if err != nil {
+		t.Fatalf("acquireProcessLock failed: %v", err)
+	}
+
+	// Channel to signal that the second goroutine is attempting to acquire the lock
+	attempting := make(chan struct{})
+	// Channel to signal that the second goroutine has acquired the lock
+	acquired := make(chan struct{})
+
+	go func() {
+		close(attempting)
+		// This should block until the main goroutine releases
+		lockFile2, err := acquireProcessLock(lockPath, false)
+		if err != nil {
+			t.Errorf("Second acquireProcessLock failed: %v", err)
+			return
+		}
+		defer lockFile2.Close()
+		close(acquired)
+	}()
+
+	// Wait for the goroutine to start attempting
+	<-attempting
+	// Give it time to actually call flock (which should block)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify the second goroutine hasn't acquired the lock yet
+	select {
+	case <-acquired:
+		t.Fatal("Second goroutine acquired lock while first still held it")
+	default:
+		// Expected: second goroutine is blocked
+	}
+
+	// Release the lock
+	lockFile.Close()
+
+	// The second goroutine should now acquire the lock
+	select {
+	case <-acquired:
+		// Expected: second goroutine acquired after release
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timed out waiting for second goroutine to acquire lock")
+	}
+}
+
+// TestAcquireProcessLockErrorHandling tests error cases for lock acquisition.
+func TestAcquireProcessLockErrorHandling(t *testing.T) {
+	t.Run("nonexistent directory returns error", func(t *testing.T) {
+		lockPath := "/nonexistent/directory/test.lock"
+		lockFile, err := acquireProcessLock(lockPath, false)
+		if err == nil {
+			lockFile.Close()
+			t.Fatal("Expected error for nonexistent directory, got nil")
+		}
+	})
+}

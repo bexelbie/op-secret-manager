@@ -588,6 +588,31 @@ func validateOutputPath(path string, uid string) error {
 	return nil
 }
 
+// lockFilePath returns the path for the per-user process lock file.
+func lockFilePath(uid string) string {
+	return filepath.Join("/run/user", uid, "op-secret-manager.lock")
+}
+
+// acquireProcessLock acquires an exclusive flock on a lock file.
+// It blocks until the lock is available. Returns the lock file (caller must defer Close() to release).
+// The lock is automatically released if the process crashes or is killed.
+func acquireProcessLock(lockPath string, verbose bool) (*os.File, error) {
+	logVerbose(verbose, "Opening lock file: %s", lockPath)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("acquireProcessLock: failed to open lock file %s: %w", lockPath, err)
+	}
+
+	logVerbose(verbose, "Waiting for exclusive lock: %s", lockPath)
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("acquireProcessLock: failed to acquire lock on %s: %w", lockPath, err)
+	}
+
+	logVerbose(verbose, "Exclusive lock acquired: %s", lockPath)
+	return f, nil
+}
+
 // main is the entry point of the program with graceful shutdown.
 func main() {
 	verbose := flag.Bool("v", false, "Enable verbose logging")
@@ -644,6 +669,18 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Acquire per-user process lock to serialize concurrent invocations.
+	// This prevents WASM runtime conflicts when multiple containers start simultaneously.
+	lockPath := lockFilePath(currentUser.Uid)
+	logVerbose(*verbose, "Acquiring process lock: %s", lockPath)
+	lockFile, err := acquireProcessLock(lockPath, *verbose)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer lockFile.Close()
+	logVerbose(*verbose, "Process lock acquired: %s", lockPath)
 
 	// Initialize 1Password client.
 	ctx, cancel = context.WithTimeout(context.Background(), opTimeout)

@@ -60,6 +60,8 @@ WantedBy=default.target
 3. Application reads `$DB_PASSWORD_FILE` and `$API_KEY_FILE` to get secret paths
 4. When container stops, `ExecStopPost` runs `op-secret-manager --cleanup` to delete secret files
 
+**Concurrent container starts**: When multiple quadlets for the same user start simultaneously, `op-secret-manager` uses a per-user file lock to serialize invocations. This prevents WASM runtime conflicts in the 1Password SDK. No special systemd ordering is needed.
+
 ### **Enable and Start**
 
 ```bash
