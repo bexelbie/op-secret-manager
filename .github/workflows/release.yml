@@ -28,8 +28,9 @@ jobs:
 
       - name: Build for Linux
         run: |
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-linux-amd64 .
-          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o op-secret-manager-linux-arm64 .
+          VERSION="${{ github.ref_name }}"
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o op-secret-manager-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o op-secret-manager-linux-arm64 .
 
       - name: Upload Release Assets
         uses: actions/upload-artifact@v4

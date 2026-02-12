@@ -20,6 +20,9 @@ import (
 	"github.com/1password/onepassword-sdk-go"
 )
 
+// version is set at build time via -ldflags="-X main.version=<version>"
+var version = "dev"
+
 // sanitizeEnvironment clears dangerous environment variables that could be exploited in SUID binaries.
 // This must run before main() to prevent the Go runtime from processing these variables.
 // Addresses CVE-2023-29403 and similar vulnerabilities.
@@ -619,8 +622,15 @@ func main() {
 	cleanup := flag.Bool("cleanup", false, "Remove files created by the op-secret-manager")
 	apiKeyPath := flag.String("api-key-path", "", "Path to API key file (overrides OP_API_KEY_PATH env var and default)")
 	mapFilePath := flag.String("map-file-path", "", "Path to map file (overrides OP_MAP_FILE_PATH env var and default)")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
 	flag.Parse()
+
+	// Handle version flag
+	if *versionFlag {
+		fmt.Printf("op-secret-manager %s\n", version)
+		os.Exit(0)
+	}
 
 	logVerbose(*verbose, "Starting program with verbose logging enabled")
 
