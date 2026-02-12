@@ -51,12 +51,13 @@ jobs:
         with:
           fetch-depth: 0 # Fetch all tags for git operations
 
-      - name: Extract tag message
-        id: tag_message
+      - name: Extract release notes from commit message
+        id: release_notes
         run: |
-          TAG_MESSAGE=$(git tag -l --format='%(contents)' "${{ github.ref_name }}")
+          # Get the commit message of the tagged commit
+          COMMIT_MESSAGE=$(git log -1 --format=%B "${{ github.ref_name }}")
           echo "message<<EOF" >> $GITHUB_OUTPUT
-          echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
+          echo "$COMMIT_MESSAGE" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Download Release Assets
@@ -68,7 +69,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          body: ${{ steps.tag_message.outputs.message }}
+          body: ${{ steps.release_notes.outputs.message }}
           files: |
             binaries/op-secret-manager-linux-amd64
             binaries/op-secret-manager-linux-arm64
