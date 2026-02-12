@@ -45,6 +45,19 @@ jobs:
     permissions:
       contents: write # Required to create a release and upload assets
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all tags for git operations
+
+      - name: Extract tag message
+        id: tag_message
+        run: |
+          TAG_MESSAGE=$(git tag -l --format='%(contents)' "${{ github.ref_name }}")
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Download Release Assets
         uses: actions/download-artifact@v4
         with:
@@ -54,9 +67,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
+          body: ${{ steps.tag_message.outputs.message }}
           files: |
             binaries/op-secret-manager-linux-amd64
             binaries/op-secret-manager-linux-arm64
           draft: false
           prerelease: false
-          generate_release_notes: true
