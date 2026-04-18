@@ -240,6 +240,23 @@ func resolveConfigPaths(verbose bool, apiKeyPathFlag, mapFilePathFlag string) (s
 	return apiKeyPath, mapFilePath
 }
 
+// resolveTagConfig resolves tag filtering configuration from CLI flags.
+func resolveTagConfig(verbose bool, tagsFlag string, untaggedFlag bool) ([]string, bool) {
+	var filterTags []string
+	includeUntagged := false
+
+	if tagsFlag != "" {
+		logVerbose(verbose, "Overriding tags with CLI flag: %s", tagsFlag)
+		filterTags = parseTags(tagsFlag)
+	}
+	if untaggedFlag {
+		logVerbose(verbose, "Overriding untagged with CLI flag")
+		includeUntagged = true
+	}
+
+	return filterTags, includeUntagged
+}
+
 // dropSUID drops SUID privileges by switching to the current user.
 // This function is not unit tested due to its reliance on system calls
 // that require root privileges and specific system setup.
@@ -297,37 +314,85 @@ func resolveSecretPath(path string, uid string) string {
 	return filepath.Join("/run/user", uid, "secrets", path)
 }
 
+// parseTags splits a comma-separated tag string into individual tags.
+// Each tag is trimmed of whitespace. Empty tags are discarded.
+func parseTags(tagField string) []string {
+	parts := strings.Split(tagField, ",")
+	var tags []string
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
+}
+
+// shouldProcessEntry determines if a mapfile entry should be processed based on tag filters.
+// When no filters are active (filterTags is empty and includeUntagged is false), all entries
+// are processed (backward-compatible default). When filters are active, an entry is processed
+// if its tags intersect with filterTags, or if the entry is untagged and includeUntagged is true.
+func shouldProcessEntry(entryTags []string, filterTags []string, includeUntagged bool) bool {
+	// No filter active - process everything
+	if len(filterTags) == 0 && !includeUntagged {
+		return true
+	}
+
+	isUntagged := len(entryTags) == 0
+
+	// Check if untagged entry should be included
+	if isUntagged {
+		return includeUntagged
+	}
+
+	// Check if any entry tag matches a filter tag
+	for _, et := range entryTags {
+		for _, ft := range filterTags {
+			if et == ft {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // parseMapFileLine parses a single line from the map file.
 // Returns an error for blank lines, comments, and invalid entries (these should be skipped).
 // Comments are lines that start with # (after trimming whitespace).
-// Valid lines have exactly three whitespace-separated fields: username, secret-reference, file-path.
-func parseMapFileLine(line string) (username, secretRef, filePath string, err error) {
+// Valid lines have 3 or 4 whitespace-separated fields: username, secret-reference, file-path, [tags].
+// The optional 4th field is a comma-separated list of tags for filtering.
+func parseMapFileLine(line string) (username, secretRef, filePath string, tags []string, err error) {
 	// Trim leading/trailing whitespace
 	trimmed := strings.TrimSpace(line)
 
 	// Skip blank lines
 	if trimmed == "" {
-		return "", "", "", fmt.Errorf("blank line")
+		return "", "", "", nil, fmt.Errorf("blank line")
 	}
 
 	// Skip comment lines
 	if strings.HasPrefix(trimmed, "#") {
-		return "", "", "", fmt.Errorf("comment line")
+		return "", "", "", nil, fmt.Errorf("comment line")
 	}
 
 	// Split by any whitespace
 	fields := strings.Fields(trimmed)
 
-	// Must have exactly 3 fields
-	if len(fields) != 3 {
-		return "", "", "", fmt.Errorf("invalid line format: expected 3 fields, got %d", len(fields))
+	// Must have 3 or 4 fields
+	if len(fields) < 3 || len(fields) > 4 {
+		return "", "", "", nil, fmt.Errorf("invalid line format: expected 3 or 4 fields, got %d", len(fields))
 	}
 
-	return fields[0], fields[1], fields[2], nil
+	if len(fields) == 4 {
+		tags = parseTags(fields[3])
+	}
+
+	return fields[0], fields[1], fields[2], tags, nil
 }
 
 // processMapFile processes the map file and writes secrets with proper resource cleanup.
-func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte, currentUser *user.User, verbose bool, fw fileWriter) error {
+func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte, currentUser *user.User, verbose bool, fw fileWriter, filterTags []string, includeUntagged bool) error {
 	logVerbose(verbose, "Processing map file content")
 	scanner := bufio.NewScanner(strings.NewReader(string(mapFileContent)))
 	lineNumber := 0
@@ -341,7 +406,7 @@ func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte,
 		line := scanner.Text()
 
 		// Parse the line
-		username, secretRef, filePath, err := parseMapFileLine(line)
+		username, secretRef, filePath, entryTags, err := parseMapFileLine(line)
 		if err != nil {
 			// Skip blank lines and comments silently
 			if verbose && !strings.Contains(err.Error(), "blank line") && !strings.Contains(err.Error(), "comment line") {
@@ -355,6 +420,12 @@ func processMapFile(ctx context.Context, client OPClient, mapFileContent []byte,
 			if verbose {
 				logVerbose(verbose, "Skipping line %d: not for current user", lineNumber)
 			}
+			continue
+		}
+
+		// Apply tag filter
+		if !shouldProcessEntry(entryTags, filterTags, includeUntagged) {
+			logVerbose(verbose, "Skipping line %d: does not match tag filter", lineNumber)
 			continue
 		}
 
@@ -489,7 +560,7 @@ func handleSignals(cancel context.CancelFunc) {
 // It reads the map file to identify files created for the current user and safely removes them.
 // Only files are removed; directories are left intact.
 // Returns an error if any file cannot be removed.
-func cleanupSecretFiles(mapFileContent []byte, currentUser *user.User, verbose bool) error {
+func cleanupSecretFiles(mapFileContent []byte, currentUser *user.User, verbose bool, filterTags []string, includeUntagged bool) error {
 	logVerbose(verbose, "Processing map file content for cleanup")
 	scanner := bufio.NewScanner(strings.NewReader(string(mapFileContent)))
 	lineNumber := 0
@@ -499,7 +570,7 @@ func cleanupSecretFiles(mapFileContent []byte, currentUser *user.User, verbose b
 		line := scanner.Text()
 
 		// Parse the line
-		username, _, filePath, err := parseMapFileLine(line)
+		username, _, filePath, entryTags, err := parseMapFileLine(line)
 		if err != nil {
 			// Skip blank lines and comments silently
 			continue
@@ -508,6 +579,12 @@ func cleanupSecretFiles(mapFileContent []byte, currentUser *user.User, verbose b
 		// Process only entries for the current user.
 		if username != currentUser.Username {
 			logVerbose(verbose, "Skipping line %d: file %s belongs to user %s, not current user %s", lineNumber, filePath, username, currentUser.Username)
+			continue
+		}
+
+		// Apply tag filter
+		if !shouldProcessEntry(entryTags, filterTags, includeUntagged) {
+			logVerbose(verbose, "Skipping line %d: does not match tag filter", lineNumber)
 			continue
 		}
 
@@ -618,12 +695,26 @@ func acquireProcessLock(lockPath string, verbose bool) (*os.File, error) {
 
 // main is the entry point of the program with graceful shutdown.
 func main() {
-	verbose := flag.Bool("v", false, "Enable verbose logging")
-	cleanup := flag.Bool("cleanup", false, "Remove files created by the op-secret-manager")
+	verbose := flag.Bool("v", false, "")
+	cleanup := flag.Bool("cleanup", false, "Remove files created by op-secret-manager")
 	apiKeyPath := flag.String("api-key-path", "", "Path to API key file (overrides OP_API_KEY_PATH env var and default)")
 	mapFilePath := flag.String("map-file-path", "", "Path to map file (overrides OP_MAP_FILE_PATH env var and default)")
+	tagsFlag := flag.String("tags", "", "Comma-separated tags to filter entries")
+	untaggedFlag := flag.Bool("untagged", false, "Include untagged entries")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.BoolVar(verbose, "verbose", false, "Enable verbose logging")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: op-secret-manager [options]\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "  -v, --verbose         Enable verbose logging\n")
+		fmt.Fprintf(os.Stderr, "  --cleanup             Remove files created by op-secret-manager\n")
+		fmt.Fprintf(os.Stderr, "  --api-key-path PATH   Path to API key file (overrides OP_API_KEY_PATH env var and default)\n")
+		fmt.Fprintf(os.Stderr, "  --map-file-path PATH  Path to map file (overrides OP_MAP_FILE_PATH env var and default)\n")
+		fmt.Fprintf(os.Stderr, "  --tags TAGS           Comma-separated tags to filter entries\n")
+		fmt.Fprintf(os.Stderr, "  --untagged            Include untagged entries\n")
+		fmt.Fprintf(os.Stderr, "  --version             Print version and exit\n")
+	}
+
 	flag.Parse()
 
 	// Handle version flag
@@ -653,6 +744,9 @@ func main() {
 
 	// Resolve configuration paths with precedence: CLI flags > env vars > defaults
 	resolvedAPIKeyPath, resolvedMapFilePath := resolveConfigPaths(*verbose, *apiKeyPath, *mapFilePath)
+
+	// Resolve tag filtering configuration
+	filterTags, includeUntagged := resolveTagConfig(*verbose, *tagsFlag, *untaggedFlag)
 
 	// Check if root execution is allowed (requires secure mapfile)
 	if err := checkRootAllowed(currentUser, resolvedMapFilePath); err != nil {
@@ -705,13 +799,13 @@ func main() {
 
 	// Process the map file or cleanup files.
 	if *cleanup {
-		if err := cleanupSecretFiles(mapFileContent, currentUser, *verbose); err != nil {
+		if err := cleanupSecretFiles(mapFileContent, currentUser, *verbose, filterTags, includeUntagged); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println("Cleanup completed successfully")
 	} else {
-		if err := processMapFile(ctx, client, mapFileContent, currentUser, *verbose, osFileWriter{}); err != nil {
+		if err := processMapFile(ctx, client, mapFileContent, currentUser, *verbose, osFileWriter{}, filterTags, includeUntagged); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

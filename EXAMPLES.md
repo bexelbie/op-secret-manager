@@ -217,3 +217,73 @@ sudo /usr/local/bin/op-secret-manager
 ```
 
 Root's secrets are written to `/run/user/0/secrets/`.
+
+---
+
+## **Tag Filtering for Multi-Service Deployments**
+
+When a single user runs multiple services, tags allow selective secret fetching and cleanup per service.
+
+### **Map File**
+
+```text
+# Webapp service secrets
+appuser   op://vault/webapp/db_pass       db_password       webapp
+appuser   op://vault/webapp/session_key   session.key       webapp
+
+# API service secrets
+appuser   op://vault/api/token            api_token         api
+appuser   op://vault/api/signing_key      signing.key       api
+
+# Shared by both services
+appuser   op://vault/shared/tls_cert      cert.pem          webapp,api
+
+# Untagged - common config
+appuser   op://vault/common/log_config    logging.conf
+```
+
+### **Quadlet Files**
+
+Create separate quadlets per service. Each fetches only its own secrets.
+
+**`~/.config/containers/systemd/webapp.container`:**
+
+```ini
+[Unit]
+Description=Web Application
+After=network-online.target
+
+[Container]
+Image=docker.io/mywebapp:latest
+Volume=/run/user/%U/secrets:/run/secrets:ro,Z
+
+ExecStartPre=/usr/local/bin/op-secret-manager --tags webapp --untagged
+ExecStopPost=/usr/local/bin/op-secret-manager --cleanup --tags webapp --untagged
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+**`~/.config/containers/systemd/api.container`:**
+
+```ini
+[Unit]
+Description=API Service
+After=network-online.target
+
+[Container]
+Image=docker.io/myapi:latest
+Volume=/run/user/%U/secrets:/run/secrets:ro,Z
+
+ExecStartPre=/usr/local/bin/op-secret-manager --tags api --untagged
+ExecStopPost=/usr/local/bin/op-secret-manager --cleanup --tags api --untagged
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
+```

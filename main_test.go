@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -606,7 +607,7 @@ otheruser	op://vault/item/field3	%s`,
 		file3))
 
 	// Run cleanup
-	err = cleanupSecretFiles(mapFileContent, currentUser, false)
+	err = cleanupSecretFiles(mapFileContent, currentUser, false, nil, false)
 	if err != nil {
 		t.Fatalf("cleanupSecretFiles failed: %v", err)
 	}
@@ -625,6 +626,95 @@ otheruser	op://vault/item/field3	%s`,
 	if _, err := os.Stat(file3); !os.IsNotExist(err) {
 		t.Errorf("File %s should not exist", file3)
 	}
+}
+
+// TestCleanupSecretFilesWithTagFilter tests cleanupSecretFiles with tag filtering.
+func TestCleanupSecretFilesWithTagFilter(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("Failed to get current user: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	fileA := filepath.Join(tmpDir, "file_a")
+	fileB := filepath.Join(tmpDir, "file_b")
+	fileUntagged := filepath.Join(tmpDir, "file_untagged")
+
+	mapFileContent := []byte(fmt.Sprintf(
+		"%s\top://vault/item/field1\t%s\tservice-a\n"+
+			"%s\top://vault/item/field2\t%s\tservice-b\n"+
+			"%s\top://vault/item/field3\t%s\n",
+		currentUser.Username, fileA,
+		currentUser.Username, fileB,
+		currentUser.Username, fileUntagged))
+
+	t.Run("cleanup with tag filter only removes matching files", func(t *testing.T) {
+		// Create all files
+		for _, f := range []string{fileA, fileB, fileUntagged} {
+			if err := os.WriteFile(f, []byte("test"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		err := cleanupSecretFiles(mapFileContent, currentUser, false, []string{"service-a"}, false)
+		if err != nil {
+			t.Fatalf("cleanupSecretFiles failed: %v", err)
+		}
+
+		if _, err := os.Stat(fileA); !os.IsNotExist(err) {
+			t.Errorf("File %s should have been removed (tagged service-a)", fileA)
+		}
+		if _, err := os.Stat(fileB); os.IsNotExist(err) {
+			t.Errorf("File %s should NOT have been removed (tagged service-b)", fileB)
+		}
+		if _, err := os.Stat(fileUntagged); os.IsNotExist(err) {
+			t.Errorf("File %s should NOT have been removed (untagged)", fileUntagged)
+		}
+	})
+
+	t.Run("cleanup with tag and untagged filter", func(t *testing.T) {
+		// Recreate all files
+		for _, f := range []string{fileA, fileB, fileUntagged} {
+			if err := os.WriteFile(f, []byte("test"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		err := cleanupSecretFiles(mapFileContent, currentUser, false, []string{"service-a"}, true)
+		if err != nil {
+			t.Fatalf("cleanupSecretFiles failed: %v", err)
+		}
+
+		if _, err := os.Stat(fileA); !os.IsNotExist(err) {
+			t.Errorf("File %s should have been removed (tagged service-a)", fileA)
+		}
+		if _, err := os.Stat(fileUntagged); !os.IsNotExist(err) {
+			t.Errorf("File %s should have been removed (untagged)", fileUntagged)
+		}
+		if _, err := os.Stat(fileB); os.IsNotExist(err) {
+			t.Errorf("File %s should NOT have been removed (tagged service-b)", fileB)
+		}
+	})
+
+	t.Run("cleanup with no filter removes everything", func(t *testing.T) {
+		// Recreate all files
+		for _, f := range []string{fileA, fileB, fileUntagged} {
+			if err := os.WriteFile(f, []byte("test"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		err := cleanupSecretFiles(mapFileContent, currentUser, false, nil, false)
+		if err != nil {
+			t.Fatalf("cleanupSecretFiles failed: %v", err)
+		}
+
+		for _, f := range []string{fileA, fileB, fileUntagged} {
+			if _, err := os.Stat(f); !os.IsNotExist(err) {
+				t.Errorf("File %s should have been removed", f)
+			}
+		}
+	})
 }
 
 // TestVerifyPermissionsAndOwnership tests the verifyPermissionsAndOwnership function.
@@ -789,7 +879,7 @@ func TestProcessMapFile(t *testing.T) {
 		},
 	}
 
-	err = processMapFile(context.TODO(), mockClient, mapFileContent, currentUser, false, mockFW)
+	err = processMapFile(context.TODO(), mockClient, mapFileContent, currentUser, false, mockFW, nil, false)
 	if err != nil {
 		t.Fatalf("processMapFile failed: %v", err)
 	}
@@ -824,6 +914,128 @@ func TestProcessMapFile(t *testing.T) {
 	if !dirs[expectedDir] {
 		t.Errorf("Directory %s was not created", expectedDir)
 	}
+}
+
+// TestProcessMapFileWithTagFilter tests processMapFile with tag filtering.
+func TestProcessMapFileWithTagFilter(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("Failed to get current user: %v", err)
+	}
+
+	uid, _ := strconv.Atoi(currentUser.Uid)
+	gid, _ := strconv.Atoi(currentUser.Gid)
+
+	secretPathA := fmt.Sprintf("/run/user/%s/secrets/db_pass", currentUser.Uid)
+	secretPathB := fmt.Sprintf("/run/user/%s/secrets/redis_pass", currentUser.Uid)
+	secretPathShared := fmt.Sprintf("/run/user/%s/secrets/cert.pem", currentUser.Uid)
+	secretPathUntagged := fmt.Sprintf("/run/user/%s/secrets/common.conf", currentUser.Uid)
+
+	mapFileContent := []byte(fmt.Sprintf(
+		"%s\top://vault/item/field1\tdb_pass\tservice-a\n"+
+			"%s\top://vault/item/field2\tredis_pass\tservice-b\n"+
+			"%s\top://vault/item/field3\tcert.pem\tservice-a,service-b\n"+
+			"%s\top://vault/item/field4\tcommon.conf\n",
+		currentUser.Username, currentUser.Username,
+		currentUser.Username, currentUser.Username))
+
+	mockClient := &MockOPClient{
+		ResolveSecretFunc: func(ctx context.Context, secretRef string) (string, error) {
+			switch secretRef {
+			case "op://vault/item/field1":
+				return "secret-a", nil
+			case "op://vault/item/field2":
+				return "secret-b", nil
+			case "op://vault/item/field3":
+				return "secret-shared", nil
+			case "op://vault/item/field4":
+				return "secret-untagged", nil
+			default:
+				return "", fmt.Errorf("secret not found: %s", secretRef)
+			}
+		},
+	}
+
+	t.Run("no filter processes everything", func(t *testing.T) {
+		files := make(map[string][]byte)
+		dirs := make(map[string]bool)
+		mockFW := &mockFileWriter{files: files, dirs: dirs, uid: uid, gid: gid}
+
+		err := processMapFile(context.TODO(), mockClient, mapFileContent, currentUser, false, mockFW, nil, false)
+		if err != nil {
+			t.Fatalf("processMapFile failed: %v", err)
+		}
+
+		if len(files) != 4 {
+			t.Errorf("Expected 4 files, got %d", len(files))
+		}
+	})
+
+	t.Run("filter by single tag", func(t *testing.T) {
+		files := make(map[string][]byte)
+		dirs := make(map[string]bool)
+		mockFW := &mockFileWriter{files: files, dirs: dirs, uid: uid, gid: gid}
+
+		err := processMapFile(context.TODO(), mockClient, mapFileContent, currentUser, false, mockFW, []string{"service-a"}, false)
+		if err != nil {
+			t.Fatalf("processMapFile failed: %v", err)
+		}
+
+		if _, exists := files[secretPathA]; !exists {
+			t.Errorf("Expected file %s (tagged service-a)", secretPathA)
+		}
+		if _, exists := files[secretPathShared]; !exists {
+			t.Errorf("Expected file %s (tagged service-a,service-b)", secretPathShared)
+		}
+		if _, exists := files[secretPathB]; exists {
+			t.Errorf("Did not expect file %s (tagged service-b only)", secretPathB)
+		}
+		if _, exists := files[secretPathUntagged]; exists {
+			t.Errorf("Did not expect file %s (untagged)", secretPathUntagged)
+		}
+	})
+
+	t.Run("filter by tag and include untagged", func(t *testing.T) {
+		files := make(map[string][]byte)
+		dirs := make(map[string]bool)
+		mockFW := &mockFileWriter{files: files, dirs: dirs, uid: uid, gid: gid}
+
+		err := processMapFile(context.TODO(), mockClient, mapFileContent, currentUser, false, mockFW, []string{"service-a"}, true)
+		if err != nil {
+			t.Fatalf("processMapFile failed: %v", err)
+		}
+
+		if _, exists := files[secretPathA]; !exists {
+			t.Errorf("Expected file %s (tagged service-a)", secretPathA)
+		}
+		if _, exists := files[secretPathShared]; !exists {
+			t.Errorf("Expected file %s (tagged service-a,service-b)", secretPathShared)
+		}
+		if _, exists := files[secretPathUntagged]; !exists {
+			t.Errorf("Expected file %s (untagged)", secretPathUntagged)
+		}
+		if _, exists := files[secretPathB]; exists {
+			t.Errorf("Did not expect file %s (tagged service-b only)", secretPathB)
+		}
+	})
+
+	t.Run("untagged only", func(t *testing.T) {
+		files := make(map[string][]byte)
+		dirs := make(map[string]bool)
+		mockFW := &mockFileWriter{files: files, dirs: dirs, uid: uid, gid: gid}
+
+		err := processMapFile(context.TODO(), mockClient, mapFileContent, currentUser, false, mockFW, nil, true)
+		if err != nil {
+			t.Fatalf("processMapFile failed: %v", err)
+		}
+
+		if len(files) != 1 {
+			t.Errorf("Expected 1 file, got %d", len(files))
+		}
+		if _, exists := files[secretPathUntagged]; !exists {
+			t.Errorf("Expected file %s (untagged)", secretPathUntagged)
+		}
+	})
 }
 
 // TestResolveConfigPaths tests the resolveConfigPaths function with simplified config.
@@ -943,30 +1155,61 @@ func TestParseMapFileLine(t *testing.T) {
 		expectedUser   string
 		expectedSecret string
 		expectedPath   string
+		expectedTags   []string
 	}{
 		{
-			name:           "valid line with tabs",
+			name:           "valid line with tabs - no tags",
 			line:           "postgres\top://vault/item/field\t/run/1001/secrets/db",
 			expectError:    false,
 			expectedUser:   "postgres",
 			expectedSecret: "op://vault/item/field",
 			expectedPath:   "/run/1001/secrets/db",
+			expectedTags:   nil,
 		},
 		{
-			name:           "valid line with spaces",
+			name:           "valid line with spaces - no tags",
 			line:           "postgres op://vault/item/field /run/1001/secrets/db",
 			expectError:    false,
 			expectedUser:   "postgres",
 			expectedSecret: "op://vault/item/field",
 			expectedPath:   "/run/1001/secrets/db",
+			expectedTags:   nil,
 		},
 		{
-			name:           "valid line with mixed whitespace",
+			name:           "valid line with mixed whitespace - no tags",
 			line:           "postgres  \t  op://vault/item/field\t\t/run/1001/secrets/db",
 			expectError:    false,
 			expectedUser:   "postgres",
 			expectedSecret: "op://vault/item/field",
 			expectedPath:   "/run/1001/secrets/db",
+			expectedTags:   nil,
+		},
+		{
+			name:           "valid line with single tag",
+			line:           "postgres op://vault/item/field db_pass service-a",
+			expectError:    false,
+			expectedUser:   "postgres",
+			expectedSecret: "op://vault/item/field",
+			expectedPath:   "db_pass",
+			expectedTags:   []string{"service-a"},
+		},
+		{
+			name:           "valid line with multiple tags",
+			line:           "postgres op://vault/item/field cert.pem service-a,service-b",
+			expectError:    false,
+			expectedUser:   "postgres",
+			expectedSecret: "op://vault/item/field",
+			expectedPath:   "cert.pem",
+			expectedTags:   []string{"service-a", "service-b"},
+		},
+		{
+			name:           "tags with whitespace around commas are trimmed",
+			line:           "postgres op://vault/item/field cert.pem service-a,service-b",
+			expectError:    false,
+			expectedUser:   "postgres",
+			expectedSecret: "op://vault/item/field",
+			expectedPath:   "cert.pem",
+			expectedTags:   []string{"service-a", "service-b"},
 		},
 		{
 			name:           "line starting with comment",
@@ -975,6 +1218,7 @@ func TestParseMapFileLine(t *testing.T) {
 			expectedUser:   "",
 			expectedSecret: "",
 			expectedPath:   "",
+			expectedTags:   nil,
 		},
 		{
 			name:           "blank line",
@@ -983,6 +1227,7 @@ func TestParseMapFileLine(t *testing.T) {
 			expectedUser:   "",
 			expectedSecret: "",
 			expectedPath:   "",
+			expectedTags:   nil,
 		},
 		{
 			name:           "line with only whitespace",
@@ -991,6 +1236,7 @@ func TestParseMapFileLine(t *testing.T) {
 			expectedUser:   "",
 			expectedSecret: "",
 			expectedPath:   "",
+			expectedTags:   nil,
 		},
 		{
 			name:           "line with too few fields",
@@ -999,14 +1245,16 @@ func TestParseMapFileLine(t *testing.T) {
 			expectedUser:   "",
 			expectedSecret: "",
 			expectedPath:   "",
+			expectedTags:   nil,
 		},
 		{
 			name:           "line with too many fields",
-			line:           "postgres op://vault/item/field /run/1001/secrets/db extra",
+			line:           "postgres op://vault/item/field /run/1001/secrets/db extra fifth",
 			expectError:    true,
 			expectedUser:   "",
 			expectedSecret: "",
 			expectedPath:   "",
+			expectedTags:   nil,
 		},
 		{
 			name:           "comment with leading whitespace",
@@ -1015,12 +1263,13 @@ func TestParseMapFileLine(t *testing.T) {
 			expectedUser:   "",
 			expectedSecret: "",
 			expectedPath:   "",
+			expectedTags:   nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			user, secret, path, err := parseMapFileLine(tt.line)
+			username, secret, path, tags, err := parseMapFileLine(tt.line)
 
 			if tt.expectError {
 				if err == nil {
@@ -1033,14 +1282,212 @@ func TestParseMapFileLine(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 
-			if user != tt.expectedUser {
-				t.Errorf("Expected user %q, got %q", tt.expectedUser, user)
+			if username != tt.expectedUser {
+				t.Errorf("Expected user %q, got %q", tt.expectedUser, username)
 			}
 			if secret != tt.expectedSecret {
 				t.Errorf("Expected secret %q, got %q", tt.expectedSecret, secret)
 			}
 			if path != tt.expectedPath {
 				t.Errorf("Expected path %q, got %q", tt.expectedPath, path)
+			}
+			if len(tags) != len(tt.expectedTags) {
+				t.Errorf("Expected %d tags, got %d: %v", len(tt.expectedTags), len(tags), tags)
+			} else {
+				for i, tag := range tags {
+					if tag != tt.expectedTags[i] {
+						t.Errorf("Tag %d: expected %q, got %q", i, tt.expectedTags[i], tag)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestShouldProcessEntry tests the tag filtering logic.
+func TestShouldProcessEntry(t *testing.T) {
+	tests := []struct {
+		name           string
+		entryTags      []string
+		filterTags     []string
+		includeUntagged bool
+		expected       bool
+	}{
+		// No filter active (default behavior) - process everything
+		{
+			name:           "no filter, untagged entry",
+			entryTags:      nil,
+			filterTags:     nil,
+			includeUntagged: false,
+			expected:       true,
+		},
+		{
+			name:           "no filter, tagged entry",
+			entryTags:      []string{"service-a"},
+			filterTags:     nil,
+			includeUntagged: false,
+			expected:       true,
+		},
+
+		// Only --tags filter
+		{
+			name:           "tag filter matches",
+			entryTags:      []string{"service-a"},
+			filterTags:     []string{"service-a"},
+			includeUntagged: false,
+			expected:       true,
+		},
+		{
+			name:           "tag filter does not match",
+			entryTags:      []string{"service-b"},
+			filterTags:     []string{"service-a"},
+			includeUntagged: false,
+			expected:       false,
+		},
+		{
+			name:           "tag filter matches one of multiple entry tags",
+			entryTags:      []string{"service-a", "service-b"},
+			filterTags:     []string{"service-b"},
+			includeUntagged: false,
+			expected:       true,
+		},
+		{
+			name:           "tag filter with multiple values, one matches",
+			entryTags:      []string{"service-a"},
+			filterTags:     []string{"service-a", "service-c"},
+			includeUntagged: false,
+			expected:       true,
+		},
+		{
+			name:           "tag filter excludes untagged entries",
+			entryTags:      nil,
+			filterTags:     []string{"service-a"},
+			includeUntagged: false,
+			expected:       false,
+		},
+
+		// Only --untagged filter
+		{
+			name:           "untagged filter includes untagged entries",
+			entryTags:      nil,
+			filterTags:     nil,
+			includeUntagged: true,
+			expected:       true,
+		},
+		{
+			name:           "untagged filter excludes tagged entries",
+			entryTags:      []string{"service-a"},
+			filterTags:     nil,
+			includeUntagged: true,
+			expected:       false,
+		},
+
+		// Combined --tags and --untagged
+		{
+			name:           "combined filter includes matching tagged entry",
+			entryTags:      []string{"service-a"},
+			filterTags:     []string{"service-a"},
+			includeUntagged: true,
+			expected:       true,
+		},
+		{
+			name:           "combined filter includes untagged entry",
+			entryTags:      nil,
+			filterTags:     []string{"service-a"},
+			includeUntagged: true,
+			expected:       true,
+		},
+		{
+			name:           "combined filter excludes non-matching tagged entry",
+			entryTags:      []string{"service-b"},
+			filterTags:     []string{"service-a"},
+			includeUntagged: true,
+			expected:       false,
+		},
+
+		// Edge cases
+		{
+			name:           "empty tags slice treated as untagged",
+			entryTags:      []string{},
+			filterTags:     nil,
+			includeUntagged: true,
+			expected:       true,
+		},
+		{
+			name:           "empty tags slice excluded by tag filter",
+			entryTags:      []string{},
+			filterTags:     []string{"service-a"},
+			includeUntagged: false,
+			expected:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := shouldProcessEntry(tt.entryTags, tt.filterTags, tt.includeUntagged)
+			if result != tt.expected {
+				t.Errorf("shouldProcessEntry(%v, %v, %v) = %v, expected %v",
+					tt.entryTags, tt.filterTags, tt.includeUntagged, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestResolveTagConfig tests the resolveTagConfig function.
+func TestResolveTagConfig(t *testing.T) {
+	tests := []struct {
+		name             string
+		tagsFlag         string
+		untaggedFlag     bool
+		expectedTags     []string
+		expectedUntagged bool
+	}{
+		{
+			name:             "no flags defaults to no filter",
+			tagsFlag:         "",
+			untaggedFlag:     false,
+			expectedTags:     nil,
+			expectedUntagged: false,
+		},
+		{
+			name:             "tags flag",
+			tagsFlag:         "service-a,service-b",
+			untaggedFlag:     false,
+			expectedTags:     []string{"service-a", "service-b"},
+			expectedUntagged: false,
+		},
+		{
+			name:             "untagged flag",
+			tagsFlag:         "",
+			untaggedFlag:     true,
+			expectedTags:     nil,
+			expectedUntagged: true,
+		},
+		{
+			name:             "combined tags and untagged",
+			tagsFlag:         "service-a",
+			untaggedFlag:     true,
+			expectedTags:     []string{"service-a"},
+			expectedUntagged: true,
+		},
+		{
+			name:             "whitespace in tags is trimmed",
+			tagsFlag:         " service-a , service-b ",
+			untaggedFlag:     false,
+			expectedTags:     []string{"service-a", "service-b"},
+			expectedUntagged: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tags, untagged := resolveTagConfig(false, tt.tagsFlag, tt.untaggedFlag)
+
+			if !reflect.DeepEqual(tags, tt.expectedTags) {
+				t.Errorf("tags = %v, expected %v", tags, tt.expectedTags)
+			}
+			if untagged != tt.expectedUntagged {
+				t.Errorf("untagged = %v, expected %v", untagged, tt.expectedUntagged)
 			}
 		})
 	}

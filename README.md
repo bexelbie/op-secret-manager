@@ -148,8 +148,6 @@ The program uses the following default paths:
 
 These defaults can be overridden using command-line flags or environment variables (see Configuration Overrides below).
 
-**No configuration file is required** - the program works out-of-the-box with these defaults.
-
 ---
 
 ### **Map File Format**
@@ -157,12 +155,13 @@ These defaults can be overridden using command-line flags or environment variabl
 The `mapfile` maps 1Password secrets to file locations. Each line follows this format:
 
 ```text
-<username>  <secret_reference>  <file_path>
+<username>  <secret_reference>  <file_path>  [tags]
 ```
 
 #### **Format Rules**
 
-- **Fields**: Separate with whitespace (spaces or tabs). Must have exactly 3 fields per line.
+- **Fields**: Separate with whitespace (spaces or tabs). Must have 3 or 4 fields per line.
+- **Tags** (optional): Comma-separated list of tags for selective filtering (e.g., `service-a,service-b`)
 - **Comments**: Lines starting with `#` (after leading whitespace) are ignored
 - **Blank lines**: Empty lines or whitespace-only lines are ignored
 - **No inline comments**: Comments at the end of data lines are not supported
@@ -174,6 +173,7 @@ The `mapfile` maps 1Password secrets to file locations. Each line follows this f
 3. **`<file_path>`**: Where to write the secret:
    - **Relative path** (recommended): e.g., `db_password` → `/run/user/<uid>/secrets/db_password`
    - **Absolute path**: e.g., `/home/user/.docker/config.json` (writes anywhere user has permission)
+4. **`[tags]`** (optional): Comma-separated tags for filtering (e.g., `webapp`, `webapp,api`)
 
 #### **Output Directory**
 
@@ -200,6 +200,12 @@ redis      op://vault/redis/auth          redis_password
 # Absolute paths - persistent config files
 myuser     op://vault/docker/config       /home/myuser/.docker/config.json
 postgres   op://vault/pg/cert             /var/lib/postgresql/.postgresql/client-cert.pem
+
+# Tagged entries for single-user multi-service deployments
+appuser    op://vault/webapp/db_pass      db_password       webapp
+appuser    op://vault/api/token           api_token         api
+appuser    op://vault/shared/tls_cert     cert.pem          webapp,api
+appuser    op://vault/common/log_config   logging.conf
 ```
 
 **Security**: After privilege drop, the program runs as the real user. Filesystem permissions control access. Path traversal (`..`) is blocked.
@@ -295,7 +301,7 @@ postgres% op-secret-manager
 
 To enable verbose logging:
 ```bash
-postgres% op-secret-manager -v
+postgres% op-secret-manager --verbose
 ```
 
 To clean up created files:
@@ -305,21 +311,33 @@ postgres% op-secret-manager --cleanup
 
 #### **Configuration Overrides**
 
-The program supports flexible configuration through command-line flags and environment variables. Configuration values are resolved in the following order of precedence (highest to lowest):
-
-1. **Command-line flags** (highest priority)
-2. **Environment variables**
-3. **Default values** (lowest priority: `/etc/op-secret-manager/api` and `/etc/op-secret-manager/mapfile`)
+The program supports flexible configuration through command-line flags and environment variables.
 
 **Command-line flags:**
+- `-v`, `--verbose`: Enable verbose logging
+- `--cleanup`: Remove files created by op-secret-manager
 - `--api-key-path <path>`: Override the default API key file path
 - `--map-file-path <path>`: Override the default map file path
+- `--tags <tags>`: Comma-separated tags to filter which entries to process
+- `--untagged`: Include untagged entries when a tag filter is active
+- `--version`: Print version and exit
 
 **Environment variables:**
 - `OP_API_KEY_PATH`: Override the default API key file path
 - `OP_MAP_FILE_PATH`: Override the default map file path
 
+**Configuration precedence** (highest to lowest):
+
+1. **Command-line flags** (highest priority)
+2. **Environment variables** (for path overrides only)
+3. **Default values** (lowest priority: `/etc/op-secret-manager/api` and `/etc/op-secret-manager/mapfile`)
+
 **Examples:**
+
+Using command-line flags:
+```bash
+postgres% op-secret-manager --api-key-path /custom/api --map-file-path /custom/mapfile
+```
 
 Using environment variables:
 ```bash
@@ -328,9 +346,34 @@ postgres% export OP_MAP_FILE_PATH=/custom/path/mapfile
 postgres% op-secret-manager
 ```
 
-Using command-line flags:
+#### **Tag Filtering**
+
+Tags enable selective processing of mapfile entries, useful when a single user runs multiple services on the same server.
+
+**Default behavior** (no flags): All entries for the current user are processed, regardless of tags.
+
+**Filtering by tag:** Process only entries with matching tags:
 ```bash
-postgres% op-secret-manager --api-key-path /custom/api --map-file-path /custom/mapfile
+# Process only webapp-tagged entries
+appuser% op-secret-manager --tags webapp
+
+# Process entries tagged webapp or api
+appuser% op-secret-manager --tags webapp,api
+```
+
+**Including untagged entries:** By default, untagged entries are excluded when `--tags` is set. Use `--untagged` to include them:
+```bash
+# Process webapp entries AND untagged entries
+appuser% op-secret-manager --tags webapp --untagged
+
+# Process only untagged entries
+appuser% op-secret-manager --untagged
+```
+
+**Tag filtering also applies to cleanup:**
+```bash
+# Clean up only webapp files
+appuser% op-secret-manager --cleanup --tags webapp
 ```
 
 ### **Verification**
