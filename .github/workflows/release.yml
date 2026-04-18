@@ -3,8 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*" # Only trigger on v* tags
-  workflow_dispatch:
+      - "v*"
 
 permissions:
   contents: write # Required to create a release and upload assets
@@ -43,22 +42,11 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # Required to create a release and upload assets
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch all tags for git operations
-
-      - name: Extract release notes from commit message
-        id: release_notes
-        run: |
-          # Get the commit message of the tagged commit
-          COMMIT_MESSAGE=$(git log -1 --format=%B "${{ github.ref_name }}")
-          echo "message<<EOF" >> $GITHUB_OUTPUT
-          echo "$COMMIT_MESSAGE" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          fetch-depth: 0
 
       - name: Download Release Assets
         uses: actions/download-artifact@v4
@@ -67,11 +55,6 @@ jobs:
           path: binaries
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          body: ${{ steps.release_notes.outputs.message }}
-          files: |
-            binaries/op-secret-manager-linux-amd64
-            binaries/op-secret-manager-linux-arm64
-          draft: false
-          prerelease: false
+        run: gh release create "$GITHUB_REF_NAME" --notes-from-tag binaries/*
+        env:
+          GH_TOKEN: ${{ github.token }}

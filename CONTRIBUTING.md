@@ -102,17 +102,32 @@ env:
 
 ## **Production Releases**
 
+GitHub Release notes are generated from the tagged commit message using
+the release workflow (`.github/workflows/release.yml`). The workflow runs
+`gh release create --notes-from-tag`, so whatever you write in the commit
+message becomes the public release notes.
+
 To create a new production release:
 
-1. **Tag a Release**:
+1. **Commit with release notes** — the first line is the version, the body
+   is the changelog:
    ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
+   git commit -m "v1.1.0 Release
+
+   - Added ARM64 support
+   - Fixed config file parsing for nested vaults"
    ```
 
-2. **Automated Build and Release**:
-   - The GitHub Actions workflow (`.github/workflows/release.yml`) will automatically build the binaries and create a release when you push a tag.
-   - Binaries for Linux (AMD64 and ARM64) are built automatically.
+2. **Tag the commit and push**:
+   ```bash
+   git tag v1.1.0
+   git push origin main --tags
+   ```
+
+3. **Automated Build and Release**:
+   - The workflow triggers on the `v*` tag push, builds Linux binaries
+     (AMD64 and ARM64), and creates a GitHub Release whose body is the
+     tagged commit message.
 
 ---
 
