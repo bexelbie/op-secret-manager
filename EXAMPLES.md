@@ -60,7 +60,7 @@ WantedBy=default.target
 3. Application reads `$DB_PASSWORD_FILE` and `$API_KEY_FILE` to get secret paths
 4. When container stops, `ExecStopPost` runs `op-secret-manager --cleanup` to delete secret files
 
-**Concurrent container starts**: When multiple quadlets for the same user start simultaneously, `op-secret-manager` uses a per-user file lock to serialize invocations. This prevents WASM runtime conflicts in the 1Password SDK. No special systemd ordering is needed.
+**Serialization on small machines**: When multiple quadlets for the same user start simultaneously on resource-constrained machines, add `--serialize` to force sequential execution. This prevents WASM cold-start resource exhaustion. On machines with sufficient CPU and memory, this is unnecessary.
 
 ### **Enable and Start**
 
@@ -287,3 +287,14 @@ Restart=always
 [Install]
 WantedBy=default.target
 ```
+
+### **Serialization for Resource-Constrained Machines**
+
+On small VPS instances where simultaneous WASM cold starts exhaust resources, add `--serialize` to force sequential execution:
+
+```ini
+ExecStartPre=/usr/local/bin/op-secret-manager --serialize --tags webapp --untagged
+ExecStopPost=/usr/local/bin/op-secret-manager --cleanup --serialize --tags webapp --untagged
+```
+
+This acquires a per-user file lock so only one instance runs at a time. On machines with sufficient CPU and memory, `--serialize` is unnecessary.

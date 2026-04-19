@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -54,11 +55,16 @@ const (
 	// defaultMapFilePath is the default location of the map file
 	defaultMapFilePath = "/etc/op-secret-manager/mapfile"
 
-	// opTimeout is the default timeout for 1Password operations.
-	// This timeout is used for API calls and file operations to prevent
-	// indefinite hangs. Adjust this value based on network conditions
-	// and expected operation times.
-	opTimeout = 10 * time.Second
+	// lockTimeout is the maximum time to wait for the per-user process lock
+	// when --serialize is enabled. Five minutes allows for several sequential
+	// WASM cold starts on resource-constrained machines.
+	lockTimeout = 5 * time.Minute
+
+	// lockPollInterval is how often to retry lock acquisition.
+	lockPollInterval = 1 * time.Second
+
+	// lockLogInterval is how often to log that we're still waiting for the lock.
+	lockLogInterval = 5 * time.Second
 )
 
 // fileWriter defines the interface for file system operations.
@@ -243,18 +249,14 @@ func resolveConfigPaths(verbose bool, apiKeyPathFlag, mapFilePathFlag string) (s
 // resolveTagConfig resolves tag filtering configuration from CLI flags.
 func resolveTagConfig(verbose bool, tagsFlag string, untaggedFlag bool) ([]string, bool) {
 	var filterTags []string
-	includeUntagged := false
-
 	if tagsFlag != "" {
-		logVerbose(verbose, "Overriding tags with CLI flag: %s", tagsFlag)
+		logVerbose(verbose, "Tag filter: %s", tagsFlag)
 		filterTags = parseTags(tagsFlag)
 	}
 	if untaggedFlag {
-		logVerbose(verbose, "Overriding untagged with CLI flag")
-		includeUntagged = true
+		logVerbose(verbose, "Including untagged entries")
 	}
-
-	return filterTags, includeUntagged
+	return filterTags, untaggedFlag
 }
 
 // dropSUID drops SUID privileges by switching to the current user.
@@ -590,7 +592,7 @@ func cleanupSecretFiles(mapFileContent []byte, currentUser *user.User, verbose b
 
 		logVerbose(verbose, "Processing cleanup for file: %s", filePath)
 
-		// Resolve path the same way secret fetching does.
+		// Resolve relative paths the same way processMapFile does.
 		filePath = resolveSecretPath(filePath, currentUser.Uid)
 		logVerbose(verbose, "Resolved cleanup path: %s", filePath)
 
@@ -678,29 +680,58 @@ func lockFilePath(uid string) string {
 }
 
 // acquireProcessLock acquires an exclusive flock on a lock file.
-// It blocks until the lock is available. Returns the lock file (caller must defer Close() to release).
+// It polls with LOCK_NB to allow periodic logging and a bounded timeout.
+// The ctx parameter allows signal-driven cancellation to interrupt the wait.
+// Returns the lock file (caller must defer Close() to release).
 // The lock is automatically released if the process crashes or is killed.
-func acquireProcessLock(lockPath string, verbose bool) (*os.File, error) {
+func acquireProcessLock(ctx context.Context, lockPath string, verbose bool) (*os.File, error) {
 	logVerbose(verbose, "Opening lock file: %s", lockPath)
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("acquireProcessLock: failed to open lock file %s: %w", lockPath, err)
 	}
 
-	logVerbose(verbose, "Waiting for exclusive lock: %s", lockPath)
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("acquireProcessLock: failed to acquire lock on %s: %w", lockPath, err)
-	}
+	deadline := time.Now().Add(lockTimeout)
+	lastLog := time.Time{}
 
-	logVerbose(verbose, "Exclusive lock acquired: %s", lockPath)
-	return f, nil
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			logVerbose(verbose, "Exclusive lock acquired: %s", lockPath)
+			return f, nil
+		}
+
+		// Only retry when the lock is held by another process (EWOULDBLOCK).
+		// Any other error (EBADF, EINVAL, ENOTSUP, etc.) is a real failure.
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			f.Close()
+			return nil, fmt.Errorf("acquireProcessLock: flock failed on %s: %w", lockPath, err)
+		}
+
+		if ctx.Err() != nil {
+			f.Close()
+			return nil, fmt.Errorf("acquireProcessLock: interrupted while waiting for lock on %s: %w", lockPath, ctx.Err())
+		}
+
+		if time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("acquireProcessLock: timed out after %v waiting for lock on %s", lockTimeout, lockPath)
+		}
+
+		if time.Since(lastLog) >= lockLogInterval {
+			log.Printf("Waiting for process lock %s (held by another instance)...", lockPath)
+			lastLog = time.Now()
+		}
+
+		time.Sleep(lockPollInterval)
+	}
 }
 
 // main is the entry point of the program with graceful shutdown.
 func main() {
 	verbose := flag.Bool("v", false, "")
 	cleanup := flag.Bool("cleanup", false, "Remove files created by op-secret-manager")
+	serialize := flag.Bool("serialize", false, "Serialize concurrent invocations with a per-user flock")
 	apiKeyPath := flag.String("api-key-path", "", "Path to API key file (overrides OP_API_KEY_PATH env var and default)")
 	mapFilePath := flag.String("map-file-path", "", "Path to map file (overrides OP_MAP_FILE_PATH env var and default)")
 	tagsFlag := flag.String("tags", "", "Comma-separated tags to filter entries")
@@ -712,6 +743,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: op-secret-manager [options]\n\nOptions:\n")
 		fmt.Fprintf(os.Stderr, "  -v, --verbose         Enable verbose logging\n")
 		fmt.Fprintf(os.Stderr, "  --cleanup             Remove files created by op-secret-manager\n")
+		fmt.Fprintf(os.Stderr, "  --serialize           Serialize concurrent invocations with a per-user flock\n")
 		fmt.Fprintf(os.Stderr, "  --api-key-path PATH   Path to API key file (overrides OP_API_KEY_PATH env var and default)\n")
 		fmt.Fprintf(os.Stderr, "  --map-file-path PATH  Path to map file (overrides OP_MAP_FILE_PATH env var and default)\n")
 		fmt.Fprintf(os.Stderr, "  --tags TAGS           Comma-separated tags to filter entries\n")
@@ -729,11 +761,11 @@ func main() {
 
 	logVerbose(*verbose, "Starting program with verbose logging enabled")
 
-	// Set up context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	// Set up root context for signal-driven cancellation (no timeout).
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle signals for graceful shutdown
+	// Handle signals for graceful shutdown.
 	handleSignals(cancel)
 
 	// Get current user.
@@ -781,17 +813,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Acquire per-user process lock to serialize concurrent invocations.
-	// This prevents WASM runtime conflicts when multiple containers start simultaneously.
-	lockPath := lockFilePath(currentUser.Uid)
-	logVerbose(*verbose, "Acquiring process lock: %s", lockPath)
-	lockFile, err := acquireProcessLock(lockPath, *verbose)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Optionally serialize concurrent invocations with a per-user flock.
+	// Use --serialize on resource-constrained machines where parallel WASM
+	// cold starts would exhaust CPU/memory and cause timeouts.
+	if *serialize {
+		lockPath := lockFilePath(currentUser.Uid)
+		logVerbose(*verbose, "Acquiring process lock: %s", lockPath)
+		lockFile, err := acquireProcessLock(ctx, lockPath, *verbose)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer lockFile.Close()
+		logVerbose(*verbose, "Process lock acquired: %s", lockPath)
 	}
-	defer lockFile.Close()
-	logVerbose(*verbose, "Process lock acquired: %s", lockPath)
 
 	// Process the map file or cleanup files.
 	if *cleanup {
@@ -801,10 +836,8 @@ func main() {
 		}
 		fmt.Println("Cleanup completed successfully")
 	} else {
-		// Initialize 1Password client.
-		ctx, cancel = context.WithTimeout(context.Background(), opTimeout)
-		defer cancel()
-
+		// Initialize 1Password client. The root context carries signal cancellation
+		// so SIGTERM/SIGINT will abort the WASM cold-start and 1Password auth.
 		client, err := initializeClient(ctx, apiKey)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -812,6 +845,7 @@ func main() {
 		}
 		logVerbose(*verbose, "1Password client initialized successfully")
 
+		// Process secrets using the root context (signal-cancellable, no deadline).
 		if err := processMapFile(ctx, client, mapFileContent, currentUser, *verbose, osFileWriter{}, filterTags, includeUntagged); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)

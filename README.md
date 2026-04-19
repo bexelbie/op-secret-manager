@@ -40,8 +40,7 @@ The program is intended to securely manage and distribute secrets to users on a 
 3. The program reads the 1Password service API key from `/etc/op-secret-manager/api`.
 4. It reads a map of secrets and their corresponding file locations from `/etc/op-secret-manager/mapfile`.
 5. The program **immediately drops privileges** back to the real user.
-6. The program acquires a per-user file lock to serialize concurrent invocations (prevents WASM runtime conflicts).
-7. The program retrieves each secret that belongs to the user running the program and writes them to the specified file locations under `/run/user/<uid>/secrets/`.
+6. The program retrieves each secret that belongs to the user running the program and writes them to the specified file locations under `/run/user/<uid>/secrets/`.
 
 **Key principle**: Configuration files are read with elevated privileges, but all network operations and secret file writes happen with the user's own permissions.
 
@@ -54,8 +53,7 @@ The program uses a **SUID-to-service-account** design (NOT SUID-to-root) to sepa
 1. **Initial State**: Binary is SUID+SGID to `op` service account (an unprivileged user)
 2. **Configuration Read** (elevated): Reads API key and map file from protected locations accessible via `op` UID/GID
 3. **Privilege Drop**: Immediately drops SUID and SGID privileges to the real user (caller's UID/GID)
-4. **Process Lock**: Acquires an exclusive per-user file lock (`/run/user/<uid>/op-secret-manager.lock`) to serialize concurrent invocations
-5. **Secret Operations** (unprivileged): All 1Password API calls and file writes run as the real user
+4. **Secret Operations** (unprivileged): All 1Password API calls and file writes run as the real user
 
 #### **Why SUID to Service Account, Not Root?**
 
@@ -128,7 +126,7 @@ sudo chmod 640 /etc/op-secret-manager/mapfile  # rw-r-----
 
 #### **Threat Model**
 
-**Mitigated:** API key exposure, cross-user secret access, directory traversal, file race conditions, environment manipulation, privilege escalation via SUID, mapfile poisoning (for root execution), concurrent invocation conflicts (per-user flock serialization).
+**Mitigated:** API key exposure, cross-user secret access, directory traversal, file race conditions, environment manipulation, privilege escalation via SUID, mapfile poisoning (for root execution).
 
 **NOT Mitigated:** Compromised service account or API key, malicious administrator, 1Password service account over-scoping.
 
@@ -309,6 +307,11 @@ To clean up created files:
 postgres% op-secret-manager --cleanup
 ```
 
+To serialize concurrent invocations on resource-constrained machines:
+```bash
+postgres% op-secret-manager --serialize
+```
+
 #### **Configuration Overrides**
 
 The program supports flexible configuration through command-line flags and environment variables.
@@ -316,6 +319,7 @@ The program supports flexible configuration through command-line flags and envir
 **Command-line flags:**
 - `-v`, `--verbose`: Enable verbose logging
 - `--cleanup`: Remove files created by op-secret-manager
+- `--serialize`: Serialize concurrent invocations with a per-user flock (see Serialization below)
 - `--api-key-path <path>`: Override the default API key file path
 - `--map-file-path <path>`: Override the default map file path
 - `--tags <tags>`: Comma-separated tags to filter which entries to process
@@ -375,6 +379,22 @@ appuser% op-secret-manager --untagged
 # Clean up only webapp files
 appuser% op-secret-manager --cleanup --tags webapp
 ```
+
+#### **Serialization**
+
+By default, multiple instances of `op-secret-manager` run concurrently without coordination. On resource-constrained machines (e.g., small VPS), simultaneous WASM cold starts from the 1Password SDK can exhaust CPU and memory, causing systemd timeouts.
+
+Use `--serialize` to acquire a per-user file lock (`/run/user/<uid>/op-secret-manager.lock`) that forces instances to run one at a time:
+
+```bash
+# In systemd unit files on a small VPS
+ExecStartPre=/usr/local/bin/op-secret-manager --serialize
+ExecStopPost=/usr/local/bin/op-secret-manager --cleanup --serialize
+```
+
+The lock uses non-blocking polling with periodic logging so you can see when an instance is waiting. It times out after 5 minutes and respects signal cancellation (SIGTERM/SIGINT).
+
+On machines with sufficient resources, `--serialize` is unnecessary — multiple instances will complete within normal systemd timeouts without coordination.
 
 ### **Verification**
 
