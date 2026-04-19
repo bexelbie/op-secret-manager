@@ -717,6 +717,42 @@ func TestCleanupSecretFilesWithTagFilter(t *testing.T) {
 	})
 }
 
+// TestCleanupSecretFilesRelativePaths verifies that cleanup resolves relative
+// paths the same way processMapFile does (to /run/user/<uid>/secrets/<name>).
+func TestCleanupSecretFilesRelativePaths(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("Failed to get current user: %v", err)
+	}
+
+	// Create the secrets dir under /run/user/<uid>/secrets/ if possible,
+	// otherwise skip (CI environments may not have /run/user).
+	secretsDir := filepath.Join("/run/user", currentUser.Uid, "secrets")
+	if err := os.MkdirAll(secretsDir, 0700); err != nil {
+		t.Skipf("Cannot create %s (expected in CI): %v", secretsDir, err)
+	}
+
+	// Create a secret file via the resolved relative path
+	secretFile := filepath.Join(secretsDir, "test_cleanup_relative")
+	if err := os.WriteFile(secretFile, []byte("secret"), 0600); err != nil {
+		t.Fatalf("Failed to write test secret: %v", err)
+	}
+	defer os.Remove(secretFile)
+
+	// Map file uses a relative path (just the filename)
+	mapFileContent := []byte(fmt.Sprintf("%s\top://vault/item/field\ttest_cleanup_relative\n",
+		currentUser.Username))
+
+	err = cleanupSecretFiles(mapFileContent, currentUser, false, nil, false)
+	if err != nil {
+		t.Fatalf("cleanupSecretFiles failed: %v", err)
+	}
+
+	if _, err := os.Stat(secretFile); !os.IsNotExist(err) {
+		t.Errorf("Relative-path secret %s should have been removed by cleanup", secretFile)
+	}
+}
+
 // TestVerifyPermissionsAndOwnership tests the verifyPermissionsAndOwnership function.
 // This test verifies that the function correctly checks file permissions and ownership.
 // Note: Some test cases are skipped when running as root since root can bypass

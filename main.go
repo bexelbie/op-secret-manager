@@ -590,6 +590,10 @@ func cleanupSecretFiles(mapFileContent []byte, currentUser *user.User, verbose b
 
 		logVerbose(verbose, "Processing cleanup for file: %s", filePath)
 
+		// Resolve path the same way secret fetching does.
+		filePath = resolveSecretPath(filePath, currentUser.Uid)
+		logVerbose(verbose, "Resolved cleanup path: %s", filePath)
+
 		// Check if the file exists.
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			logVerbose(verbose, "File does not exist, skipping: %s", filePath)
@@ -754,18 +758,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Read API key while still privileged
-	apiKey, err := readAPIKey(*verbose, resolvedAPIKeyPath)
+	// Read map file contents while still privileged.
+	mapFileContent, err := os.ReadFile(resolvedMapFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Read map file contents while still privileged
-	mapFileContent, err := os.ReadFile(resolvedMapFilePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Read API key while still privileged (only needed for secret fetching, not cleanup).
+	var apiKey string
+	if !*cleanup {
+		apiKey, err = readAPIKey(*verbose, resolvedAPIKeyPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Drop SUID privileges.
@@ -786,17 +793,6 @@ func main() {
 	defer lockFile.Close()
 	logVerbose(*verbose, "Process lock acquired: %s", lockPath)
 
-	// Initialize 1Password client.
-	ctx, cancel = context.WithTimeout(context.Background(), opTimeout)
-	defer cancel()
-
-	client, err := initializeClient(ctx, apiKey)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	logVerbose(*verbose, "1Password client initialized successfully")
-
 	// Process the map file or cleanup files.
 	if *cleanup {
 		if err := cleanupSecretFiles(mapFileContent, currentUser, *verbose, filterTags, includeUntagged); err != nil {
@@ -805,6 +801,17 @@ func main() {
 		}
 		fmt.Println("Cleanup completed successfully")
 	} else {
+		// Initialize 1Password client.
+		ctx, cancel = context.WithTimeout(context.Background(), opTimeout)
+		defer cancel()
+
+		client, err := initializeClient(ctx, apiKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		logVerbose(*verbose, "1Password client initialized successfully")
+
 		if err := processMapFile(ctx, client, mapFileContent, currentUser, *verbose, osFileWriter{}, filterTags, includeUntagged); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
